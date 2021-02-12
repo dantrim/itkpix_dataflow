@@ -17,13 +17,7 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 
 ##
-## CONFIGURATION
-##
-set(YARR_CONTROLLERS_TO_BUILD "Spec")
-set(YARR_FRONT_ENDS_TO_BUILD "Fei4;Rd53a;Star;Rd53b")
-
-##
 ## SOURCE CODE
 ##
-add_subdirectory(exts)
+add_subdirectory(YARR)
 add_subdirectory(src)
