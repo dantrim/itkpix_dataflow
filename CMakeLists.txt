@@ -13,6 +13,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
 else()
     #add_compile_options(-O2)
 endif()
+add_definitions(-DUSE_JSON)
 
 set(CMAKE_CXX_STANDARD 17)
 

@@ -20,10 +20,13 @@ foreach(lib ${libs})
     list(APPEND LibHeaderFiles ${HeaderFiles})
 endforeach()
 
+#list(APPEND WorkBenchLibs "rd53b_helpers")
+
 foreach(target ${execfiles})
     get_filename_component(execname ${target} NAME_WE)
     get_filename_component(srcfile ${target} NAME)
     add_executable(${execname} ${srcfile})
     target_link_libraries(${execname} Yarr)
+    target_link_libraries(${execname} itkpix_dataflow)
     target_include_directories(${execname} PUBLIC ${LibHeaderFiles})
 endforeach()
