@@ -37,7 +37,8 @@ std::unique_ptr<SpecController> rd53b::helpers::spec_init(std::string config) {
         return nullptr;
     }
 
-    hw->runMode();
+    //hw->runMode();
+    hw->setupMode();
     hw->setTrigEnable(0);
     hw->disableRx();
     HwController* p = hw.release();
@@ -224,10 +225,18 @@ void rd53b::helpers::set_core_columns(std::unique_ptr<Rd53b>& fe,
     fe->writeRegister(&Rd53b::EnCoreCol1, cores[1]);
     fe->writeRegister(&Rd53b::EnCoreCol2, cores[2]);
     fe->writeRegister(&Rd53b::EnCoreCol3, cores[3]);
+    fe->writeRegister(&Rd53b::RstCoreCol0, cores[0]);
+    fe->writeRegister(&Rd53b::RstCoreCol1, cores[1]);
+    fe->writeRegister(&Rd53b::RstCoreCol2, cores[2]);
+    fe->writeRegister(&Rd53b::RstCoreCol3, cores[3]);
     fe->writeRegister(&Rd53b::EnCoreColCal0, cores[0]);
     fe->writeRegister(&Rd53b::EnCoreColCal1, cores[1]);
     fe->writeRegister(&Rd53b::EnCoreColCal2, cores[2]);
     fe->writeRegister(&Rd53b::EnCoreColCal3, cores[3]);
+    fe->writeRegister(&Rd53b::HitOrMask0,~cores[0]);
+    fe->writeRegister(&Rd53b::HitOrMask1,~cores[1]);
+    fe->writeRegister(&Rd53b::HitOrMask2,~cores[2]);
+    fe->writeRegister(&Rd53b::HitOrMask3,~cores[3]);
 }
 
 bool rd53b::helpers::clear_tot_memories(std::unique_ptr<SpecController>& hw,
@@ -282,7 +291,7 @@ bool rd53b::helpers::clear_tot_memories(std::unique_ptr<SpecController>& hw,
             // enable = (frac_enabled >= pixel_fraction) ? 0 : 1; fe->setEn(col,
             // row, enable); fe->setInjEn(col, row, enable); fe->setHitbus(col,
             // row, enable); modPixels.push_back(std::make_pair(col, row));
-            // if(enable == 1)
+            // if(enable == 1u
             //{
             //    n_pix_enabled++;
             //}
