@@ -23,6 +23,12 @@ namespace fs = std::experimental::filesystem;
 //itkpix_dataflow
 #include "rd53b_helpers.h"
 
+const uint8_t PToT_maskStaging[4][4] = {
+    {0, 1, 2, 3},
+    {4, 5, 6, 7},
+    {2, 3, 0, 1},
+    {6, 7, 4, 5}};
+
 
 #define LOGGER(x) spdlog::x
 
@@ -30,7 +36,19 @@ struct option longopts_t[] = {{"hw", required_argument, NULL, 'c'},
                               {"chip", required_argument, NULL, 'r'},
                               {"debug", no_argument, NULL, 'd'},
                               {"help", no_argument, NULL, 'h'},
+                              {"chip-id", required_argument, NULL, 'i'},
                               {0, 0, 0, 0}};
+
+void set_cores(std::unique_ptr<Rd53b>& fe, std::array<uint16_t, 4> cores, bool use_ptot = false) {
+    namespace rh = rd53b::helpers;
+    rh::set_core_columns(fe, cores);
+    if(use_ptot) {
+        fe->writeRegister(&Rd53b::PtotCoreColEn0, cores[0]);
+        fe->writeRegister(&Rd53b::PtotCoreColEn1, cores[1]);
+        fe->writeRegister(&Rd53b::PtotCoreColEn2, cores[2]);
+        fe->writeRegister(&Rd53b::PtotCoreColEn3, cores[3]);
+    }
+}
 
 void print_help() {
     std::cout << "=========================================================="
@@ -40,10 +58,12 @@ void print_help() {
     std::cout << " Usage: [CMD] [OPTIONS]" << std::endl;
     std::cout << std::endl;
     std::cout << " Options:" << std::endl;
-    std::cout << "   --hw       JSON configuration file for hw controller"
+    std::cout << "   --hw         JSON configuration file for hw controller"
               << std::endl;
-    std::cout << "   --chip     JSON connectivity configuration for RD53B"
+    std::cout << "   --chip       JSON connectivity configuration for RD53B"
               << std::endl;
+    std::cout << "   -p           use PToT" << std::endl;
+    std::cout << "   -i|--chip-id Chip ID (must be same as the ChipId field in the chip JSON config" << std::endl;
     std::cout << "   -d|--debug turn on debug-level" << std::endl;
     std::cout << "   -h|--help  print this help message" << std::endl;
     std::cout << "=========================================================="
@@ -74,15 +94,21 @@ struct Hit {
         col =  0;
         row = 0;
         tot = 0;
+        ptot = 0;
+        ptoa = 0;
     }
     ~Hit() {
         col = 0;
         row = 0;
         tot = 0;
+        ptot = 0;
+        ptoa = 0;
     }
     unsigned col;
     unsigned row;
     unsigned tot;
+    unsigned ptot;
+    unsigned ptoa;
 };
 
 struct Event {
@@ -111,7 +137,7 @@ uint32_t retrieve(unsigned& start_pos, unsigned length, const std::vector<uint64
         unsigned mask_second = (1 << n_over) - 1;
 
         uint32_t value0 = data[data_block_idx_start] & mask_first;
-        uint32_t value1 = (data[data_block_idx_end] >> (63 - (n_over-1))) & mask_second;
+        uint32_t value1 = (data[data_block_idx_end] >> ((63-3) - (n_over-1))) & mask_second;
         value = (value0 << n_over) | value1;
     } else {
         value = (data[data_block_idx_start] >> end_pos_rev) & mask;
@@ -123,7 +149,7 @@ uint32_t retrieve(unsigned& start_pos, unsigned length, const std::vector<uint64
 
 
 //std::vector<Event> decode_stream(const std::vector<uint64_t>& data, bool drop_tot = false) {
-std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_compressed_hitmap = false) {
+std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_compressed_hitmap = false, bool use_ptot = false) {
     //std::vector<uint64_t> = data.blocks;
     std::vector<uint64_t> data = stream.blocks;
     unsigned pos = 0;
@@ -170,10 +196,6 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
                 qrow = retrieve(pos, 8, data);
             }
 
-            if(qrow >= 196) {
-                LOGGER(error)("Cannot handle precision ToT data, whoops!");
-                throw std::runtime_error("Handling of HitOR and precision timing data not allowed");
-            }
 
             uint32_t hitmap = retrieve(pos, 16, data);
             if(do_compressed_hitmap) {
@@ -193,29 +215,56 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
                 
             }
 
+            if(qrow >= 196) {
+                for(unsigned ibus = 0; ibus < 4; ibus++) {
+                    uint8_t hitbus = (hitmap >> (ibus << 2)) & 0xf;
+                    if(hitbus) {
+                        uint16_t ptot_ptoa_buf = 0xffff;
+                        for(unsigned iread = 0; iread < 4; iread++) {
+                            if((hitbus >> iread) & 0x1) {
+                                ptot_ptoa_buf &= ~((~retrieve(pos, 4, data) & 0xf) << (iread<<2));
+                            }
+                        } // iread
+                        uint16_t ptot = ptot_ptoa_buf & 0x7ff;
+                        uint16_t ptoa = ptot_ptoa_buf >> 11;
+                        unsigned step = 0;
+                        uint16_t pix_col = (ccol -1 ) * 8 + PToT_maskStaging[step % 4][ibus] + 1;
+                        uint16_t pix_row = step / 2 + 1;
+                        Hit hit;
+                        hit.col = pix_col;
+                        hit.row = pix_row;
+                        hit.ptot = ptot;
+                        hit.ptoa = ptoa;
+                        n_hits++;
+                        current_event.hits.push_back(hit);
+                    } // if hitbus
+                } // ibus
+            } // qrow >= 196
+            else if(!use_ptot){
 
-            // not considering compressed hitmaps right now
-            auto arr_size = RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] << 2;
-            if(arr_size == 0) {
-                LOGGER(error)("Received fragment with no ToT! ({}, {})", ccol, qrow);
-                throw std::runtime_error("Decoding error");
-            }
-            uint64_t tot = drop_tot ? 0 : retrieve(pos, arr_size, data);
-            for(unsigned ihit = 0; ihit < arr_size; ihit++) {
-                uint8_t pix_tot = (tot >> (ihit << 2)) & 0xf;
-                uint16_t pix_col = ((ccol - 1) * 8) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] >> 4) + 1;
-                uint16_t pix_row = ((qrow)*2) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] & 0xF) + 1;
+                // not considering compressed hitmaps right now
+                auto arr_size = RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] << 2;
+                if(arr_size == 0) {
+                    LOGGER(error)("Received fragment with no ToT! ({}, {})", ccol, qrow);
+                    throw std::runtime_error("Decoding error");
+                }
+                uint64_t tot = drop_tot ? 0 : retrieve(pos, arr_size, data);
+                for(unsigned ihit = 0; ihit < arr_size; ihit++) {
+                    uint8_t pix_tot = (tot >> (ihit << 2)) & 0xf;
+                    uint16_t pix_col = ((ccol - 1) * 8) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] >> 4) + 1;
+                    uint16_t pix_row = ((qrow)*2) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] & 0xF) + 1;
 
-                // consider tot == 0 to be a "no hit"
-                if(pix_tot > 0) {
-                    Hit hit;
-                    hit.col = (pix_col-1);
-                    hit.row = (pix_row-1);
-                    hit.tot = pix_tot;
-                    n_hits++;
-                    current_event.hits.push_back(hit);
-                } // non-empty tot value
-            } // ihit
+                    // consider tot == 0 to be a "no hit"
+                    if(pix_tot > 0) {
+                        Hit hit;
+                        hit.col = (pix_col-1);
+                        hit.row = (pix_row-1);
+                        hit.tot = pix_tot;
+                        n_hits++;
+                        current_event.hits.push_back(hit);
+                    } // non-empty tot value
+                } // ihit
+            } 
         } while(!is_last);
         //events.push_back(current_event);
     } // event loop
@@ -229,11 +278,15 @@ int main(int argc, char* argv[]) {
 	std::string defaultLogPattern = "[%T:%e]%^[%=8l]:%$ %v";
 	spdlog::set_pattern(defaultLogPattern);
 
+    unsigned set_chip_id = 0xf;
+    unsigned set_chip_id_ls = 0x0;
+
     std::string chip_config_filename = "";
     std::string hw_config_filename = "";
 	bool verbose = false;
+    bool use_ptot = false;
     int c;
-    while ((c = getopt_long(argc, argv, "c:dr:h", longopts_t, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "c:dr:hpi:", longopts_t, NULL)) != -1) {
         switch (c) {
             case 'c':
                 hw_config_filename = optarg;
@@ -247,6 +300,13 @@ int main(int argc, char* argv[]) {
             case 'h':
                 print_help();
                 return 0;
+                break;
+            case 'p':
+                use_ptot = true;
+                break;
+            case 'i':
+                set_chip_id = 0xf & atoi(optarg);
+                set_chip_id_ls = (set_chip_id & 0x3); // lower 2 bits
                 break;
             case '?':
             default:
@@ -271,9 +331,15 @@ int main(int argc, char* argv[]) {
     auto hw = rh::spec_init(hw_config_filename);
     auto fe = rh::rd53b_init(hw, chip_config_filename);
 
+    if(fe->getChipId() != set_chip_id) {
+        LOGGER(error)("Chip-ID from chip JSON configuration (={}) does not equal the one specified by the user (={})!", fe->getChipId(), set_chip_id);
+        throw std::runtime_error("Error in setting chip id!");
+    }
+
 	rh::clear_tot_memories(hw, fe);
 	//rh::rd53b_reset(hw, fe);
     auto cfg = dynamic_cast<FrontEndCfg*>(fe.get());
+    
 
     // lets enable a few pixels for digital injection
     fe->configure();
@@ -283,16 +349,34 @@ int main(int argc, char* argv[]) {
     hw->setRxEnable(cfg->getRxChannel());
 
     // pre-scan
-    json pre_scan_cfg = {{"InjDigEn", 1},
-                        {"Latency", 60},
-                        {"EnChipId", 1},
-                        {"DataEnEos", 1},
-                        {"NumOfEventsInStream", 1},
-                        {"DataEnBinaryRo", 0}, // drop ToT
-                        {"DataEnRaw", 0}, // drop hit map compression (always 16-bit hit maps)
-                        {"InjVcalHigh", 2000},
-                        {"InjVcalMed", 200}
-    };
+    json pre_scan_cfg;
+    if(!use_ptot) {
+        pre_scan_cfg = {{"InjDigEn", 1},
+                            {"Latency", 60},
+                            {"EnChipId", 1},
+                            {"DataEnEos", 1},
+                            {"NumOfEventsInStream", 1},
+                            {"DataEnBinaryRo", 0}, // drop ToT
+                            {"DataEnRaw", 0}, // drop hit map compression (always 16-bit hit maps)
+                            {"InjVcalHigh", 2000},
+                            {"InjVcalMed", 200}
+        };
+    } else {
+        pre_scan_cfg = {{"InjDigEn", 1},
+                            {"Latency", 60},
+                            {"EnChipId", 1},
+                            {"DataEnEos", 1},
+                            {"NumOfEventsInStream", 1},
+                            {"DataEnBinaryRo", 0}, // drop ToT
+                            {"DataEnRaw", 0}, // drop hit map compression (always 16-bit hit maps)
+                            {"InjVcalHigh", 2000},
+                            {"InjVcalMed", 200},
+                            {"TotEnPtot", 1},
+                            {"TotEnPtoa", 1},
+                            {"TotPtotLatency", 2}
+                
+        };
+    }
     for(auto j: pre_scan_cfg.items()) {
         fe->writeNamedRegister(j.key(), j.value());
     }
@@ -302,7 +386,10 @@ int main(int argc, char* argv[]) {
     rh::disable_pixels(fe);
 
     // enable specific pixels
-    std::vector<std::pair<unsigned, unsigned>> pixel_addresses { {1,1}, {8, 2}};
+    std::vector<std::pair<unsigned, unsigned>> pixel_addresses {
+        {0,0},
+        {0,1},
+    };//, {8, 2}};
     for(unsigned col = 0; col < Rd53b::n_Col; col++) {
         for(unsigned row = 0; row < Rd53b::n_Row; row++) {
             fe->setEn(col, row, 0);
@@ -314,20 +401,23 @@ int main(int argc, char* argv[]) {
         auto col = std::get<0>(pix_address);
         auto row = std::get<1>(pix_address);
         LOGGER(warn)("Enabling pix (col,row) = ({},{})", col, row);
-        fe->setEn(col, row, 1);
+        fe->setEn(col, row, use_ptot ? 0 : 1);
         fe->setInjEn(col, row, 1);
-        fe->setHitbus(col, row, 0);
+        fe->setHitbus(col, row, use_ptot ? 1 : 0);
     }
     fe->configurePixels();
     wait(hw);
 
     // enable cores
     std::array<uint16_t, 4> cores = {0x0, 0x0, 0x0, 0x0};
-    rh::set_core_columns(fe, cores);
+    set_cores(fe, cores);
+    //rh::set_core_columns(fe, cores);
+    set_cores(fe, cores, use_ptot);
     wait(hw);
     cores[0] = 0x1;//0x1 | 0x4 | 0x10;
     //cores = {0xffff, 0xffff, 0xffff, 0xffff};
-    rh::set_core_columns(fe, cores);
+    //rh::set_core_columns(fe, cores);
+    set_cores(fe, cores, use_ptot);
     wait(hw);
 
     // enable triggers
@@ -346,7 +436,7 @@ int main(int argc, char* argv[]) {
 
     // begin triggers
     hw->runMode();
-    fe->sendClear(0xf);
+    fe->sendClear(0xf & set_chip_id);
     wait(hw);
     hw->flushBuffer();
     wait(hw);
@@ -389,6 +479,8 @@ int main(int argc, char* argv[]) {
         uint64_t data0 = static_cast<uint64_t>(data_vec.at(i));
         uint64_t data1 = static_cast<uint64_t>(data_vec.at(i+1));
         uint64_t data = data1 | (data0 << 32);
+        std::bitset<64> bits(data);
+        std::cout << "block: " << bits.to_string() << std::endl;
         blocks.push_back(data);
     }
 
@@ -396,8 +488,8 @@ int main(int argc, char* argv[]) {
     std::map<unsigned, unsigned> stream_in_progress_status;
     std::map<unsigned, std::vector<uint64_t>> stream_in_progress;
 
-    LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to 3 (0b11)!");
-    stream_in_progress[3];
+    LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to {}!", set_chip_id_ls);
+    stream_in_progress[set_chip_id_ls];
     
     for(size_t block_num =  0; block_num < (data_vec.size()/2); block_num++) {
         auto data = blocks[block_num];
@@ -409,19 +501,19 @@ int main(int argc, char* argv[]) {
                 st.chip_id = ch_id;
                 st.blocks = stream_in_progress.at(ch_id);
                 stream_map[ch_id].push_back(st);
-                stream_in_progress.at(ch_id).clear();
+                stream_in_progress[ch_id].clear();
             }
         }
-        stream_in_progress.at(ch_id).push_back(data);
+        stream_in_progress[ch_id].push_back(data);
     }
 
-    LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to 3 (0b11)!");
-    uint8_t chip_id = 3;
+    LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to {}!", set_chip_id_ls);
+    uint8_t chip_id = set_chip_id_ls;
     std::vector<Event> events;
     unsigned n_hits_total = 0;
     for(size_t i = 0; i < stream_map[chip_id].size(); i++) {
         auto stream = stream_map[chip_id][i];
-        events = decode_stream(stream, /*drop tot*/ false, /*do compressed hitmap*/ true);
+        events = decode_stream(stream, /*drop tot*/ false, /*do compressed hitmap*/ true, /*use_ptot*/ use_ptot);
         if(events.size()>0) {
             LOGGER(info)("-------------------------------------------------------------------");
             LOGGER(info)("Stream for Chip {} has {} events", stream.chip_id, events.size());
@@ -433,7 +525,7 @@ int main(int argc, char* argv[]) {
                     LOGGER(info)("        EMPTY!");
                 } else {
                     for(size_t ihit = 0; ihit < hits.size(); ihit++) {
-                        LOGGER(info)("        Hit[{:02d}]: (col, row) = ({}, {}) -> ToT = {}", ihit, hits.at(ihit).col, hits.at(ihit).row, hits.at(ihit).tot);
+                        LOGGER(info)("        Hit[{:02d}]: (col, row) = ({}, {}) -> ToT = {}, PToT = {}, PToA = {}", ihit, hits.at(ihit).col, hits.at(ihit).row, hits.at(ihit).tot, hits.at(ihit).ptot, hits.at(ihit).ptoa);
                     } // ihit
                 }
             } // event
