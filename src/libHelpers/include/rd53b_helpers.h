@@ -25,6 +25,10 @@ bool spec_trigger_loop(std::unique_ptr<SpecController>& hw);
 
 std::unique_ptr<Rd53b> rd53b_init(std::unique_ptr<SpecController>& hw,
                                   std::string config);
+void rd53b_configure(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe);
+void configure_init(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe);
+void configure_global(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe);
+void configure_pixels(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe);
 bool rd53b_reset(std::unique_ptr<SpecController>& hw,
                  std::unique_ptr<Rd53b>& fe);
 

@@ -23,6 +23,7 @@ namespace fs = std::experimental::filesystem;
 #include <thread>  // this_thread
 #include <tuple>   // pair
 
+
 std::unique_ptr<SpecController> rd53b::helpers::spec_init(std::string config) {
     std::unique_ptr<HwController> hw;
     json hw_config;
@@ -175,6 +176,100 @@ std::unique_ptr<Rd53b> rd53b::helpers::rd53b_init(
     return fe;
 }
 
+void rd53b::helpers::configure_init(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe) {
+    ////logger->debug("Initiliasing chip ...");
+
+    // TODO this should only be done once per TX!
+    // Send low number of transitions for at least 10us to put chip in reset state
+
+    //logger->debug(" ... asserting CMD reset via low activity");
+    //for (unsigned int i=0; i<400; i++) {
+    //    // Pattern corresponds to approx. 0.83MHz
+    //    core->writeFifo(0xFFFFFFFF);
+    //    core->writeFifo(0xFFFFFFFF);
+    //    core->writeFifo(0xFFFFFFFF);
+    //    core->writeFifo(0x00000000);
+    //    core->writeFifo(0x00000000);
+    //    core->writeFifo(0x00000000);
+    //}
+    //core->releaseFifo();
+    //while(!core->isCmdEmpty());
+
+    // Wait for at least 1000us before chip is release from reset
+    //logger->debug(" ... waiting for CMD reset to be released");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    // Sync CMD decoder
+    //logger->debug(" ... send syncs");
+    for(unsigned int i=0; i<32; i++)
+        hw->writeFifo(0x817E817E);
+    hw->releaseFifo();
+    while(!hw->isCmdEmpty());
+
+    // Enable register writing to do more resetting
+    //logger->debug(" ... set global register in writeable mode");
+    fe->writeRegister(&Rd53b::GcrDefaultConfig, 0xAC75);
+    fe->writeRegister(&Rd53b::GcrDefaultConfigB, 0x538A);
+    while(!hw->isCmdEmpty());
+
+    // Send a global pulse to reset multiple things
+    //logger->debug(" ... send resets via global pulse");
+    fe->writeRegister(&Rd53b::GlobalPulseConf, 0x0FFF);
+    fe->writeRegister(&Rd53b::GlobalPulseWidth, 10);
+    while(!hw->isCmdEmpty());
+    fe->sendGlobalPulse(fe->getChipId());
+    while(!hw->isCmdEmpty());
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    // Reset register
+    fe->writeRegister(&Rd53b::GlobalPulseConf, 0);
+}
+
+void rd53b::helpers::configure_global(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe) {
+    //logger->debug("Configuring all registers ...");
+    fe->configureGlobal();
+    //unsigned numRegs = 138;
+    //for (unsigned addr=0; addr<numRegs; addr++) {
+    //    fe->sendWrReg(fe->getChipId(), addr, m_cfg[addr]);
+
+    //    // Special handling of preamp register
+    //    if (addr == 13) // specifically wait after setting preamp bias
+    //        while(!hw->isCmdEmpty()){;}
+    //        std::this_thread::sleep_for(std::chrono::microseconds(100));
+
+    //    if (addr % 20 == 0) // Wait every 20 regs to not overflow a buffer
+    //        while(!hw->isCmdEmpty()){;}
+    //}
+    //while(!hw->isCmdEmpty());
+}
+
+void rd53b::helpers::configure_pixels(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe) {
+    fe->configurePixels();
+    //// Setup pixel programming
+    //fe->writeRegister(&Rd53b::PixAutoRow, 1);
+    //fe->writeRegister(&Rd53b::PixBroadcast, 0);
+    //// Writing two columns and six rows at the same time
+    //for (unsigned dc=0; dc<n_DC; dc++) {
+    //    fe->writeRegister(&Rd53b::PixRegionCol, dc);
+    //    fe->writeRegister(&Rd53b::PixRegionRow, 0);
+    //    for (unsigned row=0; row<n_Row; row++) {
+    //        fe->writeRegister(&Rd53b::PixPortal, pixRegs[dc][row]);
+    //        if (row%32==0)
+    //            while(!hw->isCmdEmpty()){;}
+    //    }
+    //    while(!hw->isCmdEmpty()){;}
+    //}
+
+
+}
+
+void rd53b::helpers::rd53b_configure(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe) {
+
+    rd53b::helpers::configure_init(hw, fe);
+    rd53b::helpers::configure_global(hw, fe);
+    rd53b::helpers::configure_pixels(hw, fe);
+
+}
+
 bool rd53b::helpers::rd53b_reset(std::unique_ptr<SpecController>& hw,
                                  std::unique_ptr<Rd53b>& fe) {
     std::cout << "Resetting RD53B..." << std::endl;
@@ -310,7 +405,7 @@ bool rd53b::helpers::clear_tot_memories(std::unique_ptr<SpecController>& hw,
             }
         }  // row
     }      // col
-    //logger(logDEBUG) << "Enabling " << n_pix_enabled
+    ////logger(logDEBUG) << "Enabling " << n_pix_enabled
     //                 << " pixels in pixel mask loop"
     //                 << " (" << std::fixed << std::setprecision(2)
     //                 << 100 * (static_cast<float>(n_pix_enabled) /

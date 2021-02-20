@@ -330,6 +330,7 @@ int main(int argc, char* argv[]) {
     namespace rh = rd53b::helpers;
     auto hw = rh::spec_init(hw_config_filename);
     auto fe = rh::rd53b_init(hw, chip_config_filename);
+    fe->setChipId(set_chip_id);
 
     if(fe->getChipId() != set_chip_id) {
         LOGGER(error)("Chip-ID from chip JSON configuration (={}) does not equal the one specified by the user (={})!", fe->getChipId(), set_chip_id);
@@ -344,7 +345,7 @@ int main(int argc, char* argv[]) {
     // lets enable a few pixels for digital injection
     hw->setCmdEnable(cfg->getTxChannel());
     hw->setTrigEnable(0x0);
-    rh::rd53b_configure(hw, fe);
+    //rh::rd53b_configure(hw, fe);
     wait(hw);
     hw->flushBuffer();
     hw->setCmdEnable(cfg->getTxChannel());
@@ -352,28 +353,29 @@ int main(int argc, char* argv[]) {
     hw->runMode();
 
     // pre-scan
-    json pre_scan_cfg;
-    if(!use_ptot) {
-        pre_scan_cfg = {{"InjDigEn", 1},
-                            {"Latency", 60},
-                            {"EnChipId", 1},
-                            {"DataEnEos", 1},
-                            {"NumOfEventsInStream", 1},
-                            {"DataEnBinaryRo", 0}, // drop ToT
-                            {"DataEnRaw", 0}, // drop hit map compression (always 16-bit hit maps)
-                            {"InjVcalHigh", 2000},
-                            {"InjVcalMed", 200}};
-                            //{"GpLvdsBias", 8},
-                            //{"GpLvdsEn", 15},
-                            //{"GpLvdsPad0", 0},
-                            //{"GpLvdsPad1", 0},
-                            //{"GpLvdsPad2", 0},
-                            //{"GpLvdsPad3", 0},
-                            //{"DataMergeInMux3", 0},
-                            //{"DataMergeInMux2", 0},
-                            //{"DataMergeInMux1", 0},
-                            //{"DataMergeInMux0", 0},
-                            //{"DataMergeEn", 1}
+//    json pre_scan_cfg;
+//    if(!use_ptot) {
+//        pre_scan_cfg = {{"InjDigEn", 1},
+//                            {"Latency", 60},
+//                            {"EnChipId", 1},
+//                            {"DataEnEos", 1},
+//                            {"NumOfEventsInStream", 1},
+//                            {"DataEnBinaryRo", 0}, // drop ToT
+//                            {"DataEnRaw", 0}, // drop hit map compression (always 16-bit hit maps)
+//                            {"InjVcalHigh", 2000,
+//                            {"InjVcalMed", 200}};
+//                            //{"GpLvdsBias", 8},
+//                            //{"GpLvdsEn", 15},
+//                            //{"GpLvdsPad0", 0},
+//                            //{"GpLvdsPad1", 0},
+//                            //{"GpLvdsPad2", 0},
+//                            //{"GpLvdsPad3", 0},
+//                            //{"DataMergeInMux3", 0},
+//                            //{"DataMergeInMux2", 0},
+//                            //{"DataMergeInMux1", 0},
+//                            //{"DataMergeInMux0", 0},
+//                            //{"DataMergeEn", 1}
+//                            
 //239     DataMergeInPol.init     ( 68, &m_cfg[ 68], 8,  4, 0); regMap["DataMergeInPol"] = &Rd53bGlobalCfg::DataMergeInPol;
 //240     EnChipId.init           ( 68, &m_cfg[ 68], 7,  1, 0); regMap["EnChipId"] = &Rd53bGlobalCfg::EnChipId;
 //241     DataMergeSelClk.init    ( 68, &m_cfg[ 68], 6,  1, 1); regMap["DataMergeSelClk"] = &Rd53bGlobalCfg::DataMergeSelClk;
@@ -389,66 +391,66 @@ int main(int argc, char* argv[]) {
 //251     DataMergeOutMux2.init   ( 69, &m_cfg[ 69], 4,  2, 2); regMap["DataMergeOutMux2"] = &Rd53bGlobalCfg::DataMergeOutMux2;
 //252     DataMergeOutMux1.init   ( 69, &m_cfg[ 69], 2,  2, 1); regMap["DataMergeOutMux1"] = &Rd53bGlobalCfg::DataMergeOutMux1;
 //253     DataMergeOutMux0.init   ( 69, &m_cfg[ 69], 0,  2, 0); regMap["DataMergeOutMux0"] = &Rd53bGlobalCfg::DataMergeOutMux0;
-    } else {
-        pre_scan_cfg = {{"InjDigEn", 1},
-                            {"Latency", 60},
-                            {"EnChipId", 1},
-                            {"DataEnEos", 1},
-                            {"NumOfEventsInStream", 1},
-                            {"DataEnBinaryRo", 0}, // drop ToT
-                            {"DataEnRaw", 0}, // drop hit map compression (always 16-bit hit maps)
-                            {"InjVcalHigh", 2000},
-                            {"InjVcalMed", 200},
-                            {"TotEnPtot", 1},
-                            {"TotEnPtoa", 1},
-                            {"TotPtotLatency", 2}
-                            //{"GpLvdsBias", 8},
-                            //{"GpLvdsEn", 15},
-                            //{"GpLvdsPad0", 0},
-                            //{"GpLvdsPad1", 0},
-                            //{"GpLvdsPad2", 0},
-                            //{"GpLvdsPad3", 0}
-        };
-    }
-    for(auto j: pre_scan_cfg.items()) {
-        fe->writeNamedRegister(j.key(), j.value());
-    }
-    wait(hw);
-
-    // disable all pixels
-    rh::disable_pixels(fe);
-
-    // enable specific pixels
-    std::vector<std::pair<unsigned, unsigned>> pixel_addresses {
-        {0,0},
-        {0,1},
-    };//, {8, 2}};
-    for(unsigned col = 0; col < Rd53b::n_Col; col++) {
-        for(unsigned row = 0; row < Rd53b::n_Row; row++) {
-            fe->setEn(col, row, 0);
-            fe->setInjEn(col, row, 0);
-            fe->setHitbus(col, row, 0);
-        }
-    }
-    for(auto pix_address : pixel_addresses) {
-        auto col = std::get<0>(pix_address);
-        auto row = std::get<1>(pix_address);
-        LOGGER(warn)("Enabling pix (col,row) = ({},{})", col, row);
-        fe->setEn(col, row, use_ptot ? 0 : 1);
-        fe->setInjEn(col, row, 1);
-        fe->setHitbus(col, row, use_ptot ? 1 : 0);
-    }
-    fe->configurePixels();
-    wait(hw);
-
-    // enable cores
-    std::array<uint16_t, 4> cores = {0x0, 0x0, 0x0, 0x0};
-    set_cores(fe, cores);
-    set_cores(fe, cores, use_ptot);
-    wait(hw);
-    cores[0] = 0x1;//0x1 | 0x4 | 0x10;
-    set_cores(fe, cores, use_ptot);
-    wait(hw);
+//    } else {
+//        pre_scan_cfg = {{"InjDigEn", 1},
+//                            {"Latency", 60},
+//                            {"EnChipId", 1},
+//                            {"DataEnEos", 1},
+//                            {"NumOfEventsInStream", 1},
+//                            {"DataEnBinaryRo", 0}, // drop ToT
+//                            {"DataEnRaw", 0}, // drop hit map compression (always 16-bit hit maps)
+//                            {"InjVcalHigh", 2000},
+//                            {"InjVcalMed", 200},
+//                            {"TotEnPtot", 1},
+//                            {"TotEnPtoa", 1},
+//                            {"TotPtotLatency", 2}
+//                            //{"GpLvdsBias", 8},
+//                            //{"GpLvdsEn", 15},
+//                            //{"GpLvdsPad0", 0},
+//                            //{"GpLvdsPad1", 0},
+//                            //{"GpLvdsPad2", 0},
+//                            //{"GpLvdsPad3", 0}
+//        };
+//    }
+//    for(auto j: pre_scan_cfg.items()) {
+//        fe->writeNamedRegister(j.key(), j.value());
+//    }
+//    wait(hw);
+//
+//    // disable all pixels
+//    rh::disable_pixels(fe);
+//
+//    // enable specific pixels
+//    std::vector<std::pair<unsigned, unsigned>> pixel_addresses {
+//        {0,0},
+//        {0,1},
+//    };//, {8, 2}};
+//    for(unsigned col = 0; col < Rd53b::n_Col; col++) {
+//        for(unsigned row = 0; row < Rd53b::n_Row; row++) {
+//            fe->setEn(col, row, 0);
+//            fe->setInjEn(col, row, 0);
+//            fe->setHitbus(col, row, 0);
+//        }
+//    }
+//    for(auto pix_address : pixel_addresses) {
+//        auto col = std::get<0>(pix_address);
+//        auto row = std::get<1>(pix_address);
+//        LOGGER(warn)("Enabling pix (col,row) = ({},{})", col, row);
+//        fe->setEn(col, row, use_ptot ? 0 : 1);
+//        fe->setInjEn(col, row, 1);
+//        fe->setHitbus(col, row, use_ptot ? 1 : 0);
+//    }
+//    fe->configurePixels();
+//    wait(hw);
+//
+//    // enable cores
+//    std::array<uint16_t, 4> cores = {0x0, 0x0, 0x0, 0x0};
+//    set_cores(fe, cores);
+//    set_cores(fe, cores, use_ptot);
+//    wait(hw);
+//    cores[0] = 0x1;//0x1 | 0x4 | 0x10;
+//    set_cores(fe, cores, use_ptot);
+//    wait(hw);
 
     // enable triggers
     hw->setCmdEnable(cfg->getTxChannel());
@@ -476,6 +478,10 @@ int main(int argc, char* argv[]) {
         LOGGER(error)("Trigger is not enabled!");
         throw std::runtime_error("Trigger is not enabled but waiting for triggers!");
     }
+
+    LOGGER(error)("FIXING CHIP ID TO 14 FOR DATA RECEPTION");
+    set_chip_id = 14;
+    set_chip_id_ls = 0x3 & set_chip_id;
 
 
     uint32_t done = 0;
@@ -510,6 +516,7 @@ int main(int argc, char* argv[]) {
         uint64_t data1 = static_cast<uint64_t>(data_vec.at(i+1));
         uint64_t data = data1 | (data0 << 32);
         std::bitset<64> bits(data);
+        //std::cout << "block: " << std::hex << bits.to_ulong() << std::endl; /// bits.to_string() << std::endl;
         std::cout << "block: " << bits.to_string() << std::endl;
         blocks.push_back(data);
     }
@@ -525,6 +532,13 @@ int main(int argc, char* argv[]) {
         auto data = blocks[block_num];
         uint8_t ns_bit = (data >> 63) & 0x1;
         uint8_t ch_id = (data >> 61) & 0x3;
+        std::bitset<64> bits(data);
+        if(ch_id == set_chip_id_ls) {
+            LOGGER(info)("Data from CH ID {}: {}", set_chip_id_ls, bits.to_string());
+            //LOGGER(info)("Data from CH ID {}: {:x}", set_chip_id_ls, bits.to_ulong());//to_string());
+        }
+        //LOGGER(warn)("Skipping data with CH.ID = {}", ch_id);
+        if(ch_id != set_chip_id_ls) continue;
         if(ns_bit == 1) {
             if(stream_in_progress.at(ch_id).size() > 0) {
                 Stream st;
