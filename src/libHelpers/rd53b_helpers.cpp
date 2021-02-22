@@ -222,6 +222,40 @@ void rd53b::helpers::configure_init(std::unique_ptr<SpecController>& hw, std::un
     std::this_thread::sleep_for(std::chrono::microseconds(100));
     // Reset register
     fe->writeRegister(&Rd53b::GlobalPulseConf, 0);
+
+    // Reset Core
+    for (unsigned i=0; i<16; i++) {
+        fe->writeRegister(&Rd53b::RstCoreCol0, 1<<i);
+        fe->writeRegister(&Rd53b::RstCoreCol1, 1<<i);
+        fe->writeRegister(&Rd53b::RstCoreCol2, 1<<i);
+        fe->writeRegister(&Rd53b::RstCoreCol3, 1<<i);
+        fe->writeRegister(&Rd53b::EnCoreCol0, 1<<i);
+        fe->writeRegister(&Rd53b::EnCoreCol1, 1<<i);
+        fe->writeRegister(&Rd53b::EnCoreCol2, 1<<i);
+        fe->writeRegister(&Rd53b::EnCoreCol3, 1<<i);
+        while(!hw->isCmdEmpty()){;}
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        fe->sendClear(fe->getChipId());
+        while(!hw->isCmdEmpty()){;}
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    // Enable all for now, will be overwritten by global config
+    fe->writeRegister(&Rd53b::RstCoreCol0, 0xFFFF);
+    fe->writeRegister(&Rd53b::RstCoreCol1, 0xFFFF);
+    fe->writeRegister(&Rd53b::RstCoreCol2, 0xFFFF);
+    fe->writeRegister(&Rd53b::RstCoreCol3, 0x3F);
+    fe->writeRegister(&Rd53b::EnCoreCol0, 0xFFFF);
+    fe->writeRegister(&Rd53b::EnCoreCol1, 0xFFFF);
+    fe->writeRegister(&Rd53b::EnCoreCol2, 0xFFFF);
+    fe->writeRegister(&Rd53b::EnCoreCol3, 0x3F);
+    while(!hw->isCmdEmpty()){;}
+
+    // Send a clear cmd
+    fe->sendClear(fe->getChipId());
+    while(!hw->isCmdEmpty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
 }
 
 void rd53b::helpers::configure_global(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe) {
