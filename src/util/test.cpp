@@ -453,7 +453,7 @@ int main(int argc, char* argv[]) {
     // enable triggers
     hw->setCmdEnable(cfg->getTxChannel());
     json trigger_config =  {{"trigMultiplier", 16},
-                            {"count", 50},
+                            {"count", 5},
                             {"delay", 56},
                             {"extTrigger", false},
                             {"frequency", 5000},

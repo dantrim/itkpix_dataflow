@@ -6,6 +6,7 @@
 #include <vector>
 #include <getopt.h>
 #include <bitset>
+#include <iomanip>
 namespace fs = std::experimental::filesystem;
 
 //YARR
@@ -49,6 +50,19 @@ void set_cores(std::unique_ptr<Rd53b>& fe, std::array<uint16_t, 4> cores, bool u
         fe->writeRegister(&Rd53b::PtotCoreColEn3, cores[3]);
     }
 }
+
+void set_pixels_enable(std::unique_ptr<Rd53b>& fe, std::vector<std::pair<unsigned, unsigned>> pixel_addresses, bool use_ptot = false) {
+    for(auto pix_address : pixel_addresses) {
+        auto col = std::get<0>(pix_address);
+        auto row = std::get<1>(pix_address);
+        LOGGER(warn)("CHIP[{}]: Enabling pix (col,row) = ({},{})", fe->getChipId(), col, row);
+        fe->setEn(col, row, use_ptot ? 0 : 1);
+        fe->setInjEn(col, row, 1);
+        fe->setHitbus(col, row, use_ptot ? 1 : 0);
+    } // pix_address
+    fe->configurePixels();
+}
+
 
 void write_config(const json& config, std::unique_ptr<Rd53b>& fe) {
     for(auto j: config.items()) {
@@ -332,25 +346,40 @@ int main(int argc, char* argv[]) {
 
     namespace rh = rd53b::helpers;
     auto hw = rh::spec_init(hw_config_filename);
+    auto fe_global = rh::rd53b_init(hw, primary_config_filename);
+    fe_global->setChipId(16);
+
     auto fe_primary = rh::rd53b_init(hw, primary_config_filename);
     auto fe_secondary = rh::rd53b_init(hw, secondary_config_filename);
 
     // Sync CMD decoder
-    hw->setCmdEnable(fe_primary->getTxChannel());
-    hw->setRxEnable(fe_primary->getRxChannel());
+    hw->setCmdEnable(fe_global->getTxChannel());
+    hw->setTrigEnable(0x0);
+    hw->setRxEnable(fe_global->getRxChannel());
     hw->runMode();
-    unsigned temp_chip_id = fe_primary->getChipId();
-    fe_primary->setChipId(16);
-    fe_primary->configure();
-    //rh::rd53b_configure(hw, fe_primary);
-    fe_primary->writeNamedRegister("GpLvdsBias", 15);
-    fe_primary->writeNamedRegister("GpLvdsEn", 15);
-    fe_primary->writeNamedRegister("GpLvdsPad0", 0);
-    fe_primary->writeNamedRegister("GpLvdsPad1", 0);
-    fe_primary->writeNamedRegister("GpLvdsPad2", 0);
-    fe_primary->writeNamedRegister("GpLvdsPad3", 0);
-    rh::clear_tot_memories(hw, fe_primary);
-    fe_primary->setChipId(temp_chip_id);
+
+
+  //  unsigned temp_chip_id = fe_primary->getChipId();
+ //   fe_primary->setChipId(16);
+    fe_global->configure();
+    fe_global->writeNamedRegister("GpLvdsBias", 15);
+    fe_global->writeNamedRegister("GpLvdsEn", 15);
+    fe_global->writeNamedRegister("GpLvdsPad0", 0);
+    fe_global->writeNamedRegister("GpLvdsPad1", 0);
+    fe_global->writeNamedRegister("GpLvdsPad2", 0);
+    fe_global->writeNamedRegister("GpLvdsPad3", 0);
+    rh::clear_tot_memories(hw, fe_global);
+
+    //fe_primary->writeNamedRegister("GpLvdsBias", 15);
+    //fe_primary->writeNamedRegister("GpLvdsEn", 15);
+    //fe_primary->writeNamedRegister("GpLvdsPad0", 0);
+    //fe_primary->writeNamedRegister("GpLvdsPad1", 0);
+    //fe_primary->writeNamedRegister("GpLvdsPad2", 0);
+    //fe_primary->writeNamedRegister("GpLvdsPad3", 0);
+
+    rh::rd53b_configure(hw, fe_primary);
+    rh::rd53b_configure(hw, fe_secondary);
+
     //hw->setTrigEnable(0x0);
     //hw->runMode();
     //LOGGER(info)("Sending CMD syncs...");
@@ -366,14 +395,30 @@ int main(int argc, char* argv[]) {
     //    throw std::runtime_error("Error in setting chip id!");
     //}
 
+
     auto cfg_primary = dynamic_cast<FrontEndCfg*>(fe_primary.get());
     auto cfg_secondary = dynamic_cast<FrontEndCfg*>(fe_secondary.get());
+
+    // lets enable a few pixels for digital injection
+    hw->setCmdEnable(cfg_primary->getTxChannel());
+    hw->setTrigEnable(0x0);
+    wait(hw);
+    hw->flushBuffer();
+    hw->setCmdEnable(cfg_primary->getTxChannel());
+    hw->setRxEnable(cfg_primary->getRxChannel());
+    hw->runMode();
+
+    fe_primary->configureGlobal();
+    LOGGER(info)("Loading PRIMARY (chip id = {}) with config: {}", fe_primary->getChipId(), primary_config_filename);
+    fe_secondary->configureGlobal();
+    LOGGER(info)("Loaded SECONDARY (chip id = {}) with config: {}", fe_secondary->getChipId(), secondary_config_filename);
 
     // configure the primary
     LOGGER(info)("Configuring the PRIMARY");
     hw->setCmdEnable(cfg_primary->getTxChannel());
     //rh::rd53b_configure(hw, fe_primary);
     fe_primary->configureGlobal();
+    LOGGER(error)("PRIMARY InjDigEn = {}", fe_primary->InjDigEn.read());
     rh::disable_pixels(fe_primary);
     wait(hw);
 
@@ -382,6 +427,8 @@ int main(int argc, char* argv[]) {
     hw->setCmdEnable(cfg_secondary->getTxChannel());
     //rh::rd53b_configure(hw, fe_secondary);
     fe_secondary->configureGlobal();
+    LOGGER(error)("SECONDARY InjDigEn = {}", fe_secondary->InjDigEn.read());
+    rh::disable_pixels(fe_secondary);
     wait(hw);
 
 
@@ -398,50 +445,56 @@ int main(int argc, char* argv[]) {
                         {"InjVcalMed", 200}
     };
     write_config(pre_scan_cfg, fe_primary);
-    fe_primary->writeNamedRegister("InjDigEn", 0);
+    //fe_primary->writeNamedRegister("InjDigEn", 1);
     wait(hw);
     write_config(pre_scan_cfg, fe_secondary);
-    fe_secondary->writeNamedRegister("InjDigEn", 1);
+    //fe_secondary->writeNamedRegister("InjDigEn", 1);
     wait(hw);
 
-    // enable pixels for digital injection on SECONDARY
-    LOGGER(info)("Enabling SECONDARY pixels for digital injection");
     std::vector<std::pair<unsigned, unsigned>> pixel_addresses {
         {0,0}
         ,{0,1}
     };
-    for(auto pix_address : pixel_addresses) {
-        auto col = std::get<0>(pix_address);
-        auto row = std::get<1>(pix_address);
-        LOGGER(warn)("Enabling pix (col,row) = ({},{})", col, row);
-        fe_secondary->setEn(col, row, use_ptot ? 0 : 1);
-        fe_secondary->setInjEn(col, row, 1);
-        fe_secondary->setHitbus(col, row, use_ptot ? 1 : 0);
-    } // pix_address
-    fe_secondary->configurePixels();
+    std::array<uint16_t, 4> cores = {0x0, 0x0, 0x0, 0x0};
+    set_cores(fe_primary, cores, use_ptot);
     wait(hw);
 
-    // configure the corresponding core columns
-    std::array<uint16_t, 4> cores = {0x0, 0x0, 0x0, 0x0};
+    if(fe_primary->InjDigEn.read() == 1) {
+        LOGGER(info)("Enabling PRIMARY pixels for digital injection");
+        set_pixels_enable(fe_primary, pixel_addresses);
+        wait(hw);
+        // configure the corresponding core columns
+        cores[0] = 0x1;
+        set_cores(fe_primary, cores, use_ptot);
+        wait(hw);
+    }
+
+
+    // enable pixels for digital injection on SECONDARY
+    cores = {0x0, 0x0, 0x0, 0x0};
     set_cores(fe_secondary, cores, use_ptot);
-    wait(hw);
-    cores[0] = 0x1;
-    set_cores(fe_secondary, cores, use_ptot);
-    wait(hw);
+    if(fe_secondary->InjDigEn.read() == 1) {
+        LOGGER(info)("Enabling SECONDARY pixels for digital injection");
+        set_pixels_enable(fe_secondary, pixel_addresses);
+        wait(hw);
+        cores[0] = 0x1;
+        set_cores(fe_secondary, cores, use_ptot);
+        wait(hw);
+    }
 
 
     // setup the trigger
-    hw->setTrigEnable(0x0);
-    wait(hw);
-    hw->flushBuffer();
-    hw->setCmdEnable(cfg_primary->getTxChannel());
-    hw->setRxEnable(cfg_primary->getRxChannel());
-    hw->runMode();
+    //hw->setTrigEnable(0x0);
+    //wait(hw);
+    //hw->flushBuffer();
+    //hw->setCmdEnable(cfg_primary->getTxChannel());
+    //hw->setRxEnable(cfg_primary->getRxChannel());
+    //hw->runMode();
 
     // enable triggers
     hw->setCmdEnable(cfg_primary->getTxChannel());
     json trigger_config =  {{"trigMultiplier", 16},
-                            {"count", 50},
+                            {"count", 5},
                             {"delay", 56},
                             {"extTrigger", false},
                             {"frequency", 5000},
@@ -454,8 +507,8 @@ int main(int argc, char* argv[]) {
 
     // begin triggers
     hw->runMode();
-    fe_primary->sendClear(fe_primary->getChipId());
-    fe_secondary->sendClear(fe_secondary->getChipId());
+    fe_primary->sendClear(16);//fe_primary->getChipId());
+    //fe_secondary->sendClear(fe_secondary->getChipId());
     wait(hw);
     hw->flushBuffer();
     wait(hw);
@@ -467,8 +520,8 @@ int main(int argc, char* argv[]) {
     }
 
     // look for data only from the secondary
-    unsigned set_chip_id = fe_secondary->getChipId();
-    unsigned set_chip_id_ls = 0x3 & set_chip_id;
+    //unsigned set_chip_id = fe_secondary->getChipId();
+    //unsigned set_chip_id_ls = 0x3 & set_chip_id;
 
     uint32_t done = 0;
     RawData* data = nullptr;
@@ -503,7 +556,7 @@ int main(int argc, char* argv[]) {
         uint64_t data = data1 | (data0 << 32);
         std::bitset<64> bits(data);
         //std::cout << "block: " << std::hex << bits.to_ulong() << std::endl; /// bits.to_string() << std::endl;
-        std::cout << "block: " << bits.to_string() << std::endl;
+        std::cout << "block[" << std::setw(4) << i << "]: " << bits.to_string() << std::endl;
         blocks.push_back(data);
     }
 
@@ -511,20 +564,33 @@ int main(int argc, char* argv[]) {
     std::map<unsigned, unsigned> stream_in_progress_status;
     std::map<unsigned, std::vector<uint64_t>> stream_in_progress;
 
-    LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to {}!", set_chip_id_ls);
-    stream_in_progress[set_chip_id_ls];
+    //LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to {}!", set_chip_id_ls);
+    //stream_in_progress[set_chip_id_ls];
+    stream_in_progress[0x3 & fe_primary->getChipId()];
+    stream_in_progress[0x3 & fe_secondary->getChipId()];
+
+    std::map<unsigned, unsigned> block_count;
 
     for(size_t block_num =  0; block_num < (data_vec.size()/2); block_num++) {
         auto data = blocks[block_num];
         uint8_t ns_bit = (data >> 63) & 0x1;
         uint8_t ch_id = (data >> 61) & 0x3;
+
+        if(block_count.find(ch_id) == block_count.end()) {
+            block_count[ch_id] = 0;
+        }
+        block_count.at(ch_id)++;
+
         std::bitset<64> bits(data);
-        if(ch_id == set_chip_id_ls) {
-            LOGGER(info)("Data from CH ID {}: {}", set_chip_id_ls, bits.to_string());
+        //if(ch_id == set_chip_id_ls) {
+        if(ch_id == (0x3 & fe_primary->getChipId()) || ch_id == (0x3 & fe_secondary->getChipId())) {
+            LOGGER(info)("Data from CH ID {}: {}", ch_id, bits.to_string());
             //LOGGER(info)("Data from CH ID {}: {:x}", set_chip_id_ls, bits.to_ulong());//to_string());
         }
         //LOGGER(warn)("Skipping data with CH.ID = {}", ch_id);
-        if(ch_id != set_chip_id_ls) continue;
+        bool is_primary = (ch_id == (0x3 & fe_primary->getChipId()));
+        bool is_secondary = (ch_id == 0x3 & fe_secondary->getChipId());
+        if(!(is_primary || is_secondary)) continue;
         if(ns_bit == 1) {
             if(stream_in_progress.at(ch_id).size() > 0) {
                 Stream st;
@@ -537,32 +603,43 @@ int main(int argc, char* argv[]) {
         stream_in_progress[ch_id].push_back(data);
     }
 
-    LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to {}!", set_chip_id_ls);
-    uint8_t chip_id = set_chip_id_ls;
-    std::vector<Event> events;
-    unsigned n_hits_total = 0;
-    for(size_t i = 0; i < stream_map[chip_id].size(); i++) {
-        auto stream = stream_map[chip_id][i];
-        events = decode_stream(stream, /*drop tot*/ false, /*do compressed hitmap*/ true, /*use_ptot*/ use_ptot);
-        if(events.size()>0) {
-            LOGGER(info)("-------------------------------------------------------------------");
-            LOGGER(info)("Stream for Chip {} has {} events", stream.chip_id, events.size());
-            for(auto event : events) {
-                LOGGER(info)("   TAG: {}", event.tag);
-                auto hits = event.hits;
-                n_hits_total += hits.size();
-                if(hits.size() == 0) {
-                    LOGGER(info)("        EMPTY!");
-                } else {
-                    for(size_t ihit = 0; ihit < hits.size(); ihit++) {
-                        LOGGER(info)("        Hit[{:02d}]: (col, row) = ({}, {}) -> ToT = {}, PToT = {}, PToA = {}", ihit, hits.at(ihit).col, hits.at(ihit).row, hits.at(ihit).tot, hits.at(ihit).ptot, hits.at(ihit).ptoa);
-                    } // ihit
-                }
-            } // event
-        } // non-empty event
-    } // i
+    //LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to {}!", set_chip_id_ls);
+    std::vector<unsigned> chip_ids {fe_primary->getChipId(), fe_secondary->getChipId()};
+    //uint8_t chip_id = set_chip_id_ls;
+    for(auto chip_id_full : chip_ids) {
+        LOGGER(info)("----------------------------------------------------------------");
+        uint8_t chip_id = 0x3 & chip_id_full;
+        std::vector<Event> events;
+        unsigned n_hits_total = 0;
+        for(size_t i = 0; i < stream_map[chip_id].size(); i++) {
+            auto stream = stream_map[chip_id][i];
+            events = decode_stream(stream, /*drop tot*/ false, /*do compressed hitmap*/ true, /*use_ptot*/ use_ptot);
+            if(events.size()>0) {
+                LOGGER(info)("-------------------------------------------------------------------");
+                LOGGER(info)("Stream for Chip {} has {} events", stream.chip_id, events.size());
+                for(auto event : events) {
+                    LOGGER(info)("   TAG: {}", event.tag);
+                    auto hits = event.hits;
+                    n_hits_total += hits.size();
+                    if(hits.size() == 0) {
+                        LOGGER(info)("        EMPTY!");
+                    } else {
+                        for(size_t ihit = 0; ihit < hits.size(); ihit++) {
+                            LOGGER(info)("        Hit[{:02d}]: (col, row) = ({}, {}) -> ToT = {}, PToT = {}, PToA = {}", ihit, hits.at(ihit).col, hits.at(ihit).row, hits.at(ihit).tot, hits.at(ihit).ptot, hits.at(ihit).ptoa);
+                        } // ihit
+                    }
+                } // event
+            } // non-empty event
+        } // i
+        LOGGER(info)("-------------------------------------------------------------------");
+        LOGGER(warn)("Total number of hits seen for chip-id {}: {}", chip_id, n_hits_total);
+    } // chip_id_full
     LOGGER(info)("-------------------------------------------------------------------");
-    LOGGER(warn)("Total number of hits seen for chip-id {}: {}", chip_id, n_hits_total);
+    LOGGER(info)("Total blocks seen for each observed chip id (2 ls bits):");
+    for(auto cnt: block_count) {
+        LOGGER(info)("   CH ID LS[{}] = {} blocks seen", cnt.first, cnt.second);
+    }
+
 
     return 0;
 }
