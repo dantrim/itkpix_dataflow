@@ -40,6 +40,21 @@ struct option longopts_t[] = {{"hw", required_argument, NULL, 'r'},
                               {"help", no_argument, NULL, 'h'},
                               {0, 0, 0, 0}};
 
+void wait(std::unique_ptr<SpecController>& hw) {
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    while(!hw->isCmdEmpty()) {}
+}
+
+void send_reset(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe, unsigned signal) {
+    LOGGER(info)("Sending reset signal to Chip {}: {:x}", fe->getChipId(), 0xffff & signal);
+    fe->writeRegister(&Rd53b::GlobalPulseConf, signal);
+    fe->writeRegister(&Rd53b::GlobalPulseWidth, 10);
+    wait(hw);
+    fe->sendGlobalPulse(fe->getChipId());
+    wait(hw);
+    fe->writeRegister(&Rd53b::GlobalPulseConf, 0);
+}
+
 void set_cores(std::unique_ptr<Rd53b>& fe, std::array<uint16_t, 4> cores, bool use_ptot = false) {
     namespace rh = rd53b::helpers;
     rh::set_core_columns(fe, cores);
@@ -88,10 +103,6 @@ void print_help() {
               << std::endl;
 }
 
-void wait(std::unique_ptr<SpecController>& hw) {
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-    while(!hw->isCmdEmpty()) {}
-}
 
 struct Stream {
     Stream() {
@@ -137,6 +148,7 @@ struct Event {
     unsigned tag;
     std::vector<Hit> hits;
 };
+
 
 uint32_t retrieve(unsigned& start_pos, unsigned length, const std::vector<uint64_t>& data) {
     uint32_t value = 0;
@@ -508,6 +520,16 @@ int main(int argc, char* argv[]) {
     // begin triggers
     hw->runMode();
     fe_primary->sendClear(16);//fe_primary->getChipId());
+
+    // let's send a global reset command to reset the PRIMARY's data merging path
+    send_reset(hw, fe_primary, 0x90);
+    // Sync CMD decoder
+    //LOGGER(info)("Sending SYNCs");
+    //for(unsigned int i=0; i<32; i++)
+    //    hw->writeFifo(0x817E817E);
+    //hw->releaseFifo();
+    //while(!hw->isCmdEmpty());
+
     //fe_secondary->sendClear(fe_secondary->getChipId());
     wait(hw);
     hw->flushBuffer();
@@ -551,12 +573,16 @@ int main(int argc, char* argv[]) {
     // create streams of 64-bit words
     std::vector<uint64_t> blocks;
     for(size_t i =  0; i < data_vec.size(); i+=2) {
+        if(blocks.size() > 500) {
+            LOGGER(error)("More than 500 blocks, not considering any more!");
+            break;
+        }
         uint64_t data0 = static_cast<uint64_t>(data_vec.at(i));
         uint64_t data1 = static_cast<uint64_t>(data_vec.at(i+1));
         uint64_t data = data1 | (data0 << 32);
         std::bitset<64> bits(data);
         //std::cout << "block: " << std::hex << bits.to_ulong() << std::endl; /// bits.to_string() << std::endl;
-        std::cout << "block[" << std::setw(4) << i << "]: " << bits.to_string() << std::endl;
+        std::cout << "block[" << std::setw(4) << blocks.size() << "]: " << bits.to_string() << std::endl;
         blocks.push_back(data);
     }
 
@@ -571,7 +597,12 @@ int main(int argc, char* argv[]) {
 
     std::map<unsigned, unsigned> block_count;
 
-    for(size_t block_num =  0; block_num < (data_vec.size()/2); block_num++) {
+    if(data_vec.size() % 2 != 0) {
+        LOGGER(error)("Received non-even number of 32-bit words (={})", data_vec.size());
+        return 1;
+    }
+    //for(size_t block_num =  0; block_num < (data_vec.size()/2); block_num++) {
+    for(size_t block_num = 0; block_num < blocks.size(); block_num++) {
         auto data = blocks[block_num];
         uint8_t ns_bit = (data >> 63) & 0x1;
         uint8_t ch_id = (data >> 61) & 0x3;
