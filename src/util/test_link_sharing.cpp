@@ -36,6 +36,7 @@ const uint8_t PToT_maskStaging[4][4] = {
 struct option longopts_t[] = {{"hw", required_argument, NULL, 'r'},
                               {"primary", required_argument, NULL, 'p'},
                               {"secondary", required_argument, NULL, 's'},
+                              {"trigger", required_argument, NULL, 't'},
                               {"debug", no_argument, NULL, 'd'},
                               {"help", no_argument, NULL, 'h'},
                               {0, 0, 0, 0}};
@@ -97,6 +98,7 @@ void print_help() {
               << std::endl;
     std::cout << "   -p|--primary    JSON configuration for PRIMARY chip" << std::endl;
     std::cout << "   -s|--secondary  JSON configuration for SECONDARY chip" << std::endl;
+    std::cout << "   -t|--trigger    JSON configuration for trigger [optional]" << std::endl;
     std::cout << "   -d|--debug      turn on debug-level" << std::endl;
     std::cout << "   -h|--help       print this help message" << std::endl;
     std::cout << "=========================================================="
@@ -311,10 +313,11 @@ int main(int argc, char* argv[]) {
     std::string primary_config_filename = "";
     std::string secondary_config_filename = "";
     std::string hw_config_filename = "";
+    std::string trigger_config_filename = "";
     bool use_ptot = false;
 	bool verbose = false;
     int c;
-    while ((c = getopt_long(argc, argv, "r:p:s:hd", longopts_t, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "r:p:s:t:hd", longopts_t, NULL)) != -1) {
         switch (c) {
             case 'r':
                 hw_config_filename = optarg;
@@ -324,6 +327,9 @@ int main(int argc, char* argv[]) {
                 break;
             case 's':
                 secondary_config_filename = optarg;
+                break;
+            case 't':
+                trigger_config_filename = optarg;
                 break;
             case 'd':
 				verbose = true;
@@ -355,6 +361,14 @@ int main(int argc, char* argv[]) {
         LOGGER(error)("Provided config for SECONDARY (=\"{}\") does not exist!", secondary_config_filename);
         return 1;
     }
+    if(trigger_config_filename != "") {
+        fs::path trigger_config_path(trigger_config_filename);
+        if(!fs::exists(trigger_config_filename)) {
+            LOGGER(error)("Provided TRIGGER config file (=\"{}\") does not exist!", trigger_config_filename);
+            return 1;
+        }
+        LOGGER(info)("Loading trigger config from: {}", trigger_config_filename);
+    }
 
     namespace rh = rd53b::helpers;
     auto hw = rh::spec_init(hw_config_filename);
@@ -363,34 +377,53 @@ int main(int argc, char* argv[]) {
 
     auto fe_primary = rh::rd53b_init(hw, primary_config_filename);
     auto fe_secondary = rh::rd53b_init(hw, secondary_config_filename);
+    auto cfg_primary = dynamic_cast<Rd53bCfg*>(fe_primary.get());
+    auto cfg_secondary = dynamic_cast<Rd53bCfg*>(fe_secondary.get());
+
+
+    // print out all registers and their current values
+    //auto regMap = cfg_primary->regMap;
+    //auto cfg_global = dynamic_cast<Rd53bGlobalCfg*>(cfg_primary);
+    //for(auto it : regMap) {
+    //    std::string name = it.first;
+    //    LOGGER(info)("FOO {}: {}", name, (cfg_global->*it.second).read());
+    //}
 
     // Sync CMD decoder
     hw->setCmdEnable(fe_global->getTxChannel());
     hw->setTrigEnable(0x0);
+    wait(hw);
+    hw->flushBuffer();
     hw->setRxEnable(fe_global->getRxChannel());
+    hw->setRxEnable(fe_primary->getRxChannel());
+    hw->setRxEnable(fe_secondary->getRxChannel());
     hw->runMode();
 
 
-  //  unsigned temp_chip_id = fe_primary->getChipId();
- //   fe_primary->setChipId(16);
-    fe_global->configure();
-    fe_global->writeNamedRegister("GpLvdsBias", 15);
-    fe_global->writeNamedRegister("GpLvdsEn", 15);
-    fe_global->writeNamedRegister("GpLvdsPad0", 0);
-    fe_global->writeNamedRegister("GpLvdsPad1", 0);
-    fe_global->writeNamedRegister("GpLvdsPad2", 0);
-    fe_global->writeNamedRegister("GpLvdsPad3", 0);
-    rh::clear_tot_memories(hw, fe_global);
 
-    //fe_primary->writeNamedRegister("GpLvdsBias", 15);
-    //fe_primary->writeNamedRegister("GpLvdsEn", 15);
-    //fe_primary->writeNamedRegister("GpLvdsPad0", 0);
-    //fe_primary->writeNamedRegister("GpLvdsPad1", 0);
-    //fe_primary->writeNamedRegister("GpLvdsPad2", 0);
-    //fe_primary->writeNamedRegister("GpLvdsPad3", 0);
+    //fe_global->configure();
+    //fe_global->writeNamedRegister("GpLvdsBias", 15);
+    //fe_global->writeNamedRegister("GpLvdsEn", 15);
+    //fe_global->writeNamedRegister("GpLvdsPad0", 0);
+    //fe_global->writeNamedRegister("GpLvdsPad1", 0);
+    //fe_global->writeNamedRegister("GpLvdsPad2", 0);
+    //fe_global->writeNamedRegister("GpLvdsPad3", 0);
+    //rh::clear_tot_memories(hw, fe_global);
 
+    fe_primary->writeNamedRegister("GpLvdsBias", 15);
+    fe_primary->writeNamedRegister("GpLvdsEn", 15);
+    fe_primary->writeNamedRegister("GpLvdsPad0", 0);
+    fe_primary->writeNamedRegister("GpLvdsPad1", 0);
+    fe_primary->writeNamedRegister("GpLvdsPad2", 0);
+    fe_primary->writeNamedRegister("GpLvdsPad3", 0);
     rh::rd53b_configure(hw, fe_primary);
+    rh::disable_pixels(fe_primary);
+    wait(hw);
+    hw->flushBuffer();
+    wait(hw);
     rh::rd53b_configure(hw, fe_secondary);
+    rh::disable_pixels(fe_secondary);
+    wait(hw);
 
     //hw->setTrigEnable(0x0);
     //hw->runMode();
@@ -408,72 +441,52 @@ int main(int argc, char* argv[]) {
     //}
 
 
-    auto cfg_primary = dynamic_cast<FrontEndCfg*>(fe_primary.get());
-    auto cfg_secondary = dynamic_cast<FrontEndCfg*>(fe_secondary.get());
 
     // lets enable a few pixels for digital injection
-    hw->setCmdEnable(cfg_primary->getTxChannel());
-    hw->setTrigEnable(0x0);
-    wait(hw);
-    hw->flushBuffer();
-    hw->setCmdEnable(cfg_primary->getTxChannel());
-    hw->setRxEnable(cfg_primary->getRxChannel());
-    hw->runMode();
+    //hw->setCmdEnable(cfg_primary->getTxChannel());
+    //hw->setRxEnable(cfg_primary->getRxChannel());
+    //hw->setRxEnable(cfg_secondary->getRxChannel());
+    //hw->runMode();
 
-    fe_primary->configureGlobal();
-    LOGGER(info)("Loading PRIMARY (chip id = {}) with config: {}", fe_primary->getChipId(), primary_config_filename);
-    fe_secondary->configureGlobal();
-    LOGGER(info)("Loaded SECONDARY (chip id = {}) with config: {}", fe_secondary->getChipId(), secondary_config_filename);
+    //fe_primary->configureGlobal();
+    //LOGGER(info)("Loading PRIMARY (chip id = {}) with config: {}", fe_primary->getChipId(), primary_config_filename);
+    //fe_secondary->configureGlobal();
+    //LOGGER(info)("Loaded SECONDARY (chip id = {}) with config: {}", fe_secondary->getChipId(), secondary_config_filename);
 
-    // configure the primary
-    LOGGER(info)("Configuring the PRIMARY");
-    hw->setCmdEnable(cfg_primary->getTxChannel());
-    //rh::rd53b_configure(hw, fe_primary);
-    fe_primary->configureGlobal();
-    LOGGER(error)("PRIMARY InjDigEn = {}", fe_primary->InjDigEn.read());
-    rh::disable_pixels(fe_primary);
-    wait(hw);
+    //// configure the primary
+    //LOGGER(info)("Configuring the PRIMARY");
+    //hw->setCmdEnable(cfg_primary->getTxChannel());
+    ////rh::rd53b_configure(hw, fe_primary);
+    //fe_primary->configureGlobal();
+    //LOGGER(error)("PRIMARY InjDigEn = {}", fe_primary->InjDigEn.read());
+    //wait(hw);
 
     // configure the secondary
-    LOGGER(info)("Configuring the SECONDARY");
-    hw->setCmdEnable(cfg_secondary->getTxChannel());
-    //rh::rd53b_configure(hw, fe_secondary);
-    fe_secondary->configureGlobal();
-    LOGGER(error)("SECONDARY InjDigEn = {}", fe_secondary->InjDigEn.read());
-    rh::disable_pixels(fe_secondary);
-    wait(hw);
+//    LOGGER(info)("Configuring the SECONDARY");
+//    hw->setCmdEnable(cfg_secondary->getTxChannel());
+//    //rh::rd53b_configure(hw, fe_secondary);
+//    fe_secondary->configureGlobal();
+//    LOGGER(error)("SECONDARY InjDigEn = {}", fe_secondary->InjDigEn.read());
+//    rh::disable_pixels(fe_secondary);
+//    wait(hw);
 
 
-    // common scan-specific configuration
-    LOGGER(info)("Configuring the pre-scan items");
-    json pre_scan_cfg;
-    pre_scan_cfg = {{"Latency", 60},
-                        {"EnChipId", 1},
-                        {"DataEnEos", 1},
-                        {"NumOfEventsInStream", 1},
-                        {"DataEnBinaryRo", 0}, // drop ToT
-                        {"DataEnRaw", 0}, // drop hit map compression (always 16-bit hit maps)
-                        {"InjVcalHigh", 2000},
-                        {"InjVcalMed", 200}
+    // configure pixels that we want to inject triggers
+    std::vector<std::pair<unsigned, unsigned>> pixel_addresses_primary {
+        {0,3}
+        ,{0,4}
     };
-    write_config(pre_scan_cfg, fe_primary);
-    //fe_primary->writeNamedRegister("InjDigEn", 1);
-    wait(hw);
-    write_config(pre_scan_cfg, fe_secondary);
-    //fe_secondary->writeNamedRegister("InjDigEn", 1);
-    wait(hw);
-
-    std::vector<std::pair<unsigned, unsigned>> pixel_addresses {
+    std::vector<std::pair<unsigned, unsigned>> pixel_addresses_secondary {
         {0,0}
         ,{0,1}
     };
     std::array<uint16_t, 4> cores = {0x0, 0x0, 0x0, 0x0};
+
     set_cores(fe_primary, cores, use_ptot);
     wait(hw);
-
     if(fe_primary->InjDigEn.read() == 1) {
         LOGGER(info)("Enabling PRIMARY pixels for digital injection");
-        set_pixels_enable(fe_primary, pixel_addresses);
+        set_pixels_enable(fe_primary, pixel_addresses_primary);
         wait(hw);
         // configure the corresponding core columns
         cores[0] = 0x1;
@@ -481,13 +494,12 @@ int main(int argc, char* argv[]) {
         wait(hw);
     }
 
-
     // enable pixels for digital injection on SECONDARY
     cores = {0x0, 0x0, 0x0, 0x0};
     set_cores(fe_secondary, cores, use_ptot);
     if(fe_secondary->InjDigEn.read() == 1) {
         LOGGER(info)("Enabling SECONDARY pixels for digital injection");
-        set_pixels_enable(fe_secondary, pixel_addresses);
+        set_pixels_enable(fe_secondary, pixel_addresses_secondary);
         wait(hw);
         cores[0] = 0x1;
         set_cores(fe_secondary, cores, use_ptot);
@@ -495,16 +507,9 @@ int main(int argc, char* argv[]) {
     }
 
 
-    // setup the trigger
-    //hw->setTrigEnable(0x0);
-    //wait(hw);
-    //hw->flushBuffer();
-    //hw->setCmdEnable(cfg_primary->getTxChannel());
-    //hw->setRxEnable(cfg_primary->getRxChannel());
-    //hw->runMode();
-
-    // enable triggers
+    // configure and start the triggers
     hw->setCmdEnable(cfg_primary->getTxChannel());
+    hw->setCmdEnable(cfg_secondary->getTxChannel());
     json trigger_config =  {{"trigMultiplier", 16},
                             {"count", 5},
                             {"delay", 56},
@@ -514,6 +519,12 @@ int main(int argc, char* argv[]) {
                             {"time", 0},
                             {"edgeMode", true},
                             {"edgeDuration", 20}};
+    if(trigger_config_filename != "") {
+        auto jtrig = ScanHelper::openJsonFile(trigger_config_filename);
+        trigger_config = jtrig["rd53b"]["trigger_config"];
+    }
+    int count = trigger_config["count"];
+    LOGGER(info)("Trigger config count = {}", count);
     rh::spec_init_trigger(hw, trigger_config);
     wait(hw);
 
@@ -523,12 +534,13 @@ int main(int argc, char* argv[]) {
 
     // let's send a global reset command to reset the PRIMARY's data merging path
     send_reset(hw, fe_primary, 0x90);
+    //send_reset(hw, fe_primary, 0xB0);
     // Sync CMD decoder
-    //LOGGER(info)("Sending SYNCs");
-    //for(unsigned int i=0; i<32; i++)
-    //    hw->writeFifo(0x817E817E);
-    //hw->releaseFifo();
-    //while(!hw->isCmdEmpty());
+    LOGGER(info)("Sending SYNCs");
+    for(unsigned int i=0; i<32; i++)
+        hw->writeFifo(0x817EAAAA);
+    hw->releaseFifo();
+    while(!hw->isCmdEmpty());
 
     //fe_secondary->sendClear(fe_secondary->getChipId());
     wait(hw);
