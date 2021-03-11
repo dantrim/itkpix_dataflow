@@ -38,6 +38,7 @@ struct option longopts_t[] = {{"hw", required_argument, NULL, 'r'},
                               {"secondary", required_argument, NULL, 's'},
                               {"trigger", required_argument, NULL, 't'},
                               {"debug", no_argument, NULL, 'd'},
+                              {"force", no_argument, NULL, 'f'},
                               {"help", no_argument, NULL, 'h'},
                               {0, 0, 0, 0}};
 
@@ -53,6 +54,7 @@ void send_reset(std::unique_ptr<SpecController>& hw, std::unique_ptr<Rd53b>& fe,
     wait(hw);
     fe->sendGlobalPulse(fe->getChipId());
     wait(hw);
+    //wait(hw);
     fe->writeRegister(&Rd53b::GlobalPulseConf, 0);
 }
 
@@ -100,6 +102,7 @@ void print_help() {
     std::cout << "   -s|--secondary  JSON configuration for SECONDARY chip" << std::endl;
     std::cout << "   -t|--trigger    JSON configuration for trigger [optional]" << std::endl;
     std::cout << "   -d|--debug      turn on debug-level" << std::endl;
+    std::cout << "   -f|--force      do not configure the SerSelOut of any of the chips" << std::endl;
     std::cout << "   -h|--help       print this help message" << std::endl;
     std::cout << "=========================================================="
               << std::endl;
@@ -188,7 +191,13 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
     uint8_t ns_bit = retrieve(pos, 1, data);
     uint8_t ch_id = retrieve(pos, 2, data);
     uint16_t tag = retrieve(pos, 8, data);
-    //LOGGER(info)("Decode: NS = {}, ch_id = {}, tag = {}", ns_bit, ch_id, tag);
+    //LOGGER(error)("Decode: NS = {}, ch_id = {}, tag = {}", ns_bit, ch_id, tag);
+    //size_t i = 0;
+    //for(auto block : data) {
+    //    std::bitset<64> d(block);
+    //    LOGGER(error)("    [{}] {}", i, d.to_string()); 
+    //    i += 1;
+    //}
 
     // loop over all events in the stream
     std::vector<Event> events;
@@ -229,7 +238,10 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
             }
 
 
+            //LOGGER(error)("Hitmap pos INITIAL = {}", pos);
             uint32_t hitmap = retrieve(pos, 16, data);
+            //std::bitset<16> hitmap_bits(hitmap);
+            //LOGGER(error)("   hitmap bits = {}", hitmap_bits.to_string());
             if(do_compressed_hitmap) {
                 uint16_t hitmap_raw = (hitmap & 0xffff);
                 hitmap = (RD53BDecoding::_LUT_BinaryTreeHitMap[hitmap_raw] & 0xFFFF);
@@ -246,6 +258,7 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
                 }
                 
             }
+            //LOGGER(error)("Hitmap pos FINAL   = {}", pos);
 
             if(qrow >= 196) {
                 for(unsigned ibus = 0; ibus < 4; ibus++) {
@@ -277,9 +290,10 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
                 // not considering compressed hitmaps right now
                 auto arr_size = RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] << 2;
                 if(arr_size == 0) {
-                    LOGGER(error)("Received fragment with no ToT! ({}, {})", ccol, qrow);
+                    LOGGER(error)("Received fragment with no ToT! ({}, {}) [chip id = {}, tag = {}]", ccol, qrow, ch_id, tag);
                     throw std::runtime_error("Decoding error");
                 }
+                //LOGGER(error)("ToT data start at POS = {}, size = {}", pos, arr_size);
                 uint64_t tot = drop_tot ? 0 : retrieve(pos, arr_size, data);
                 for(unsigned ihit = 0; ihit < arr_size; ihit++) {
                     uint8_t pix_tot = (tot >> (ihit << 2)) & 0xf;
@@ -316,8 +330,9 @@ int main(int argc, char* argv[]) {
     std::string trigger_config_filename = "";
     bool use_ptot = false;
 	bool verbose = false;
+    bool force_ser = false;
     int c;
-    while ((c = getopt_long(argc, argv, "r:p:s:t:hd", longopts_t, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "r:p:s:t:hdf", longopts_t, NULL)) != -1) {
         switch (c) {
             case 'r':
                 hw_config_filename = optarg;
@@ -333,6 +348,9 @@ int main(int argc, char* argv[]) {
                 break;
             case 'd':
 				verbose = true;
+                break;
+            case 'f':
+                force_ser = true;
                 break;
             case 'h':
                 print_help();
@@ -399,77 +417,32 @@ int main(int argc, char* argv[]) {
     hw->setRxEnable(fe_secondary->getRxChannel());
     hw->runMode();
 
-
-
-    //fe_global->configure();
-    //fe_global->writeNamedRegister("GpLvdsBias", 15);
-    //fe_global->writeNamedRegister("GpLvdsEn", 15);
-    //fe_global->writeNamedRegister("GpLvdsPad0", 0);
-    //fe_global->writeNamedRegister("GpLvdsPad1", 0);
-    //fe_global->writeNamedRegister("GpLvdsPad2", 0);
-    //fe_global->writeNamedRegister("GpLvdsPad3", 0);
-    //rh::clear_tot_memories(hw, fe_global);
-
-    fe_primary->writeNamedRegister("GpLvdsBias", 15);
-    fe_primary->writeNamedRegister("GpLvdsEn", 15);
-    fe_primary->writeNamedRegister("GpLvdsPad0", 0);
-    fe_primary->writeNamedRegister("GpLvdsPad1", 0);
-    fe_primary->writeNamedRegister("GpLvdsPad2", 0);
-    fe_primary->writeNamedRegister("GpLvdsPad3", 0);
     rh::rd53b_configure(hw, fe_primary);
     rh::disable_pixels(fe_primary);
     wait(hw);
     hw->flushBuffer();
     wait(hw);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // sleep to let SECONDARY catch up the CMD signals from the PRIMARY
     rh::rd53b_configure(hw, fe_secondary);
     rh::disable_pixels(fe_secondary);
     wait(hw);
 
-    //hw->setTrigEnable(0x0);
-    //hw->runMode();
-    //LOGGER(info)("Sending CMD syncs...");
-    //for(unsigned int i=0; i<32; i++)
-    //    hw->writeFifo(0x817E817E);
-    //hw->releaseFifo();
-    //wait(hw);
+    if(!force_ser) {
+        LOGGER(info)("Setting SerSelOut to CLK/2");
+        fe_secondary->writeNamedRegister("SerSelOut0", 0);
+        fe_secondary->writeNamedRegister("SerSelOut1", 0);
+        fe_secondary->writeNamedRegister("SerSelOut2", 0);
+        fe_secondary->writeNamedRegister("SerSelOut3", 0);
+        wait(hw);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 
-    //fe->setChipId(set_chip_id);
+    //uint16_t reset_cmd = 0x90;
+    uint16_t reset_cmd = 0xB9;
+    send_reset(hw, fe_primary, reset_cmd);
+//    send_reset(hw, fe_secondary, reset_cmd);
 
-    //if(fe->getChipId() != set_chip_id) {
-    //    LOGGER(error)("Chip-ID from chip JSON configuration (={}) does not equal the one specified by the user (={})!", fe->getChipId(), set_chip_id);
-    //    throw std::runtime_error("Error in setting chip id!");
-    //}
-
-
-
-    // lets enable a few pixels for digital injection
-    //hw->setCmdEnable(cfg_primary->getTxChannel());
-    //hw->setRxEnable(cfg_primary->getRxChannel());
-    //hw->setRxEnable(cfg_secondary->getRxChannel());
-    //hw->runMode();
-
-    //fe_primary->configureGlobal();
-    //LOGGER(info)("Loading PRIMARY (chip id = {}) with config: {}", fe_primary->getChipId(), primary_config_filename);
-    //fe_secondary->configureGlobal();
-    //LOGGER(info)("Loaded SECONDARY (chip id = {}) with config: {}", fe_secondary->getChipId(), secondary_config_filename);
-
-    //// configure the primary
-    //LOGGER(info)("Configuring the PRIMARY");
-    //hw->setCmdEnable(cfg_primary->getTxChannel());
-    ////rh::rd53b_configure(hw, fe_primary);
-    //fe_primary->configureGlobal();
-    //LOGGER(error)("PRIMARY InjDigEn = {}", fe_primary->InjDigEn.read());
-    //wait(hw);
-
-    // configure the secondary
-//    LOGGER(info)("Configuring the SECONDARY");
-//    hw->setCmdEnable(cfg_secondary->getTxChannel());
-//    //rh::rd53b_configure(hw, fe_secondary);
-//    fe_secondary->configureGlobal();
-//    LOGGER(error)("SECONDARY InjDigEn = {}", fe_secondary->InjDigEn.read());
-//    rh::disable_pixels(fe_secondary);
-//    wait(hw);
-
+    // first configure the secondary to send clock signals
 
     // configure pixels that we want to inject triggers
     std::vector<std::pair<unsigned, unsigned>> pixel_addresses_primary {
@@ -477,8 +450,8 @@ int main(int argc, char* argv[]) {
         ,{0,4}
     };
     std::vector<std::pair<unsigned, unsigned>> pixel_addresses_secondary {
-        {0,0}
-        ,{0,1}
+        {0,3}
+        ,{0,4}
     };
     std::array<uint16_t, 4> cores = {0x0, 0x0, 0x0, 0x0};
 
@@ -489,7 +462,7 @@ int main(int argc, char* argv[]) {
         set_pixels_enable(fe_primary, pixel_addresses_primary);
         wait(hw);
         // configure the corresponding core columns
-        cores[0] = 0x1;
+        cores[0] = 0xf;
         set_cores(fe_primary, cores, use_ptot);
         wait(hw);
     }
@@ -501,7 +474,7 @@ int main(int argc, char* argv[]) {
         LOGGER(info)("Enabling SECONDARY pixels for digital injection");
         set_pixels_enable(fe_secondary, pixel_addresses_secondary);
         wait(hw);
-        cores[0] = 0x1;
+        cores[0] = 0xf;
         set_cores(fe_secondary, cores, use_ptot);
         wait(hw);
     }
@@ -530,19 +503,29 @@ int main(int argc, char* argv[]) {
 
     // begin triggers
     hw->runMode();
-    fe_primary->sendClear(16);//fe_primary->getChipId());
 
     // let's send a global reset command to reset the PRIMARY's data merging path
-    send_reset(hw, fe_primary, 0x90);
-    //send_reset(hw, fe_primary, 0xB0);
-    // Sync CMD decoder
-    LOGGER(info)("Sending SYNCs");
-    for(unsigned int i=0; i<32; i++)
-        hw->writeFifo(0x817EAAAA);
-    hw->releaseFifo();
-    while(!hw->isCmdEmpty());
+    //reset_cmd = 0x90;
+    //send_reset(hw, fe_primary, reset_cmd);
+    //send_reset(hw, fe_secondary, reset_cmd);
 
-    //fe_secondary->sendClear(fe_secondary->getChipId());
+    // now tell the secondary to send AURORA
+    if(!force_ser) {
+        LOGGER(info)("Setting SerSelOut to AURORA");
+        fe_secondary->writeNamedRegister("SerSelOut0", 1);
+        fe_secondary->writeNamedRegister("SerSelOut1", 1);
+        fe_secondary->writeNamedRegister("SerSelOut2", 1);
+        fe_secondary->writeNamedRegister("SerSelOut3", 1);
+        wait(hw);
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    send_reset(hw, fe_primary, reset_cmd);
+    wait(hw);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    fe_primary->sendClear(fe_primary->getChipId());
+    fe_secondary->sendClear(fe_secondary->getChipId());
+
     wait(hw);
     hw->flushBuffer();
     wait(hw);
@@ -552,10 +535,6 @@ int main(int argc, char* argv[]) {
         LOGGER(error)("Trigger is not enabled!");
         throw std::runtime_error("Trigger is not enabled but waiting for triggers!");
     }
-
-    // look for data only from the secondary
-    //unsigned set_chip_id = fe_secondary->getChipId();
-    //unsigned set_chip_id_ls = 0x3 & set_chip_id;
 
     uint32_t done = 0;
     RawData* data = nullptr;
@@ -593,7 +572,6 @@ int main(int argc, char* argv[]) {
         uint64_t data1 = static_cast<uint64_t>(data_vec.at(i+1));
         uint64_t data = data1 | (data0 << 32);
         std::bitset<64> bits(data);
-        //std::cout << "block: " << std::hex << bits.to_ulong() << std::endl; /// bits.to_string() << std::endl;
         std::cout << "block[" << std::setw(4) << blocks.size() << "]: " << bits.to_string() << std::endl;
         blocks.push_back(data);
     }
@@ -602,8 +580,6 @@ int main(int argc, char* argv[]) {
     std::map<unsigned, unsigned> stream_in_progress_status;
     std::map<unsigned, std::vector<uint64_t>> stream_in_progress;
 
-    //LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to {}!", set_chip_id_ls);
-    //stream_in_progress[set_chip_id_ls];
     stream_in_progress[0x3 & fe_primary->getChipId()];
     stream_in_progress[0x3 & fe_secondary->getChipId()];
 
@@ -631,24 +607,36 @@ int main(int argc, char* argv[]) {
             //LOGGER(info)("Data from CH ID {}: {:x}", set_chip_id_ls, bits.to_ulong());//to_string());
         }
         //LOGGER(warn)("Skipping data with CH.ID = {}", ch_id);
-        bool is_primary = (ch_id == (0x3 & fe_primary->getChipId()));
-        bool is_secondary = (ch_id == 0x3 & fe_secondary->getChipId());
-        if(!(is_primary || is_secondary)) continue;
+        bool is_primary = (ch_id == 3);
+        bool is_secondary = (ch_id == 2);
+        bool is_expected_chip = (is_primary || is_secondary);
+        if(!is_expected_chip) {
+            LOGGER(error)("Data from unexpected chip id = {}", ch_id);
+            continue;
+        }
         if(ns_bit == 1) {
+            //LOGGER(warn)("NS bit seen for ch_id = {}", ch_id);
             if(stream_in_progress.at(ch_id).size() > 0) {
                 Stream st;
                 st.chip_id = ch_id;
                 st.blocks = stream_in_progress.at(ch_id);
                 stream_map[ch_id].push_back(st);
                 stream_in_progress[ch_id].clear();
+                //LOGGER(warn)("Pushing back data blocks for stream with ch_id = {}", ch_id);
             }
         }
+        //LOGGER(error)("PUSHING BACK DATA FOR STREAM_IN_PROGRESS[{}]", ch_id);
         stream_in_progress[ch_id].push_back(data);
     }
 
-    //LOGGER(error)("Hard-coding the assumed LS-bits of Chip-Id to be equal to {}!", set_chip_id_ls);
+    bool do_compressed_hitmap = fe_primary->DataEnRaw.read() == 1;
+    if(fe_primary->DataEnRaw.read() != fe_secondary->DataEnRaw.read()) {
+        LOGGER(error)("Primary and Secondary are both not set to have the same hitmap compression!");
+        LOGGER(error)("Exiting!");
+        return 1;
+    }
+
     std::vector<unsigned> chip_ids {fe_primary->getChipId(), fe_secondary->getChipId()};
-    //uint8_t chip_id = set_chip_id_ls;
     for(auto chip_id_full : chip_ids) {
         LOGGER(info)("----------------------------------------------------------------");
         uint8_t chip_id = 0x3 & chip_id_full;
@@ -656,7 +644,8 @@ int main(int argc, char* argv[]) {
         unsigned n_hits_total = 0;
         for(size_t i = 0; i < stream_map[chip_id].size(); i++) {
             auto stream = stream_map[chip_id][i];
-            events = decode_stream(stream, /*drop tot*/ false, /*do compressed hitmap*/ true, /*use_ptot*/ use_ptot);
+            //LOGGER(warn)("Calling decode_stream for stream with ch_id = {}", stream.chip_id);
+            events = decode_stream(stream, /*drop tot*/ false, /*do compressed hitmap*/ do_compressed_hitmap, /*use_ptot*/ use_ptot);
             if(events.size()>0) {
                 LOGGER(info)("-------------------------------------------------------------------");
                 LOGGER(info)("Stream for Chip {} has {} events", stream.chip_id, events.size());

@@ -1,0 +1,12 @@
+{
+    "chipType" : "RD53B",
+    "chips" : [
+        {
+            "config" : "/home/dantrim/workarea/link_sharing_test/configs/yarr/rd53b_config_linksharing_primary.json",
+            "tx" : 0,
+            "rx" : 0,
+            "enable" : 1,
+            "locked" : 0
+        }
+    ]
+}

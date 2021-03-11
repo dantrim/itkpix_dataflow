@@ -150,23 +150,19 @@ int main(int argc, char* argv[]) {
     hw->runMode();
 
     unsigned chip_id = fe->getChipId();
-    //fe->setChipId(16);
-    rh::rd53b_configure(hw, fe);
-    //fe->configure();
-    fe->setChipId(chip_id);
+    //rh::rd53b_configure(hw, fe);
 
-//    fe->writeRegister(&Rd53b::GcrDefaultConfig, 0xAC75);
-//    fe->writeRegister(&Rd53b::GcrDefaultConfigB, 0x538A);
-//    wait(hw);
-//
-//    LOGGER(info)("Writing global configuration to chip with ID = {}", fe->getChipId());
-//    fe->configureGlobal();
-//    hw->runMode();
-    int result = fe->checkCom();
-    if(result != 1) {
-        LOGGER(error)("Could not confirm checkCom after writing global configuration");
-        return 1;
-    }
+    fe->writeRegister(&Rd53b::GcrDefaultConfig, 0xAC75);
+    fe->writeRegister(&Rd53b::GcrDefaultConfigB, 0x538A);
+    wait(hw);
+
+    LOGGER(info)("Writing global configuration to chip with ID = {}", fe->getChipId());
+    fe->configureGlobal();
+//    int result = fe->checkCom();
+//    if(result != 1) {
+//        LOGGER(error)("Could not confirm checkCom after writing global configuration");
+//        return 1;
+//    }
     LOGGER(info)("Done");
     return 0;
 }
