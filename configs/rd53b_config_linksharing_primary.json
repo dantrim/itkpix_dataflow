@@ -52,7 +52,7 @@
             "DataMergeInMux1": 3,
             "DataMergeInMux2": 3,
             "DataMergeInMux3": 3,
-            "DataMergeInPol": 15,
+            "DataMergeInPol": 0,
             "DataMergeOutMux0": 0,
             "DataMergeOutMux1": 1,
             "DataMergeOutMux2": 2,
