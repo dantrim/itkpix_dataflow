@@ -38,7 +38,7 @@
             "CmlBias2": 0,
             "DataEnBcid": 0,
             "DataEnBinaryRo": 0,
-            "DataEnEos": 0,
+            "DataEnEos": 1,
             "DataEnHitRemoval": 0,
             "DataEnIsoHitRemoval": 0,
             "DataEnL1id": 0,

@@ -6,6 +6,7 @@
 #include <vector>
 #include <getopt.h>
 #include <bitset>
+#include <sstream>
 #include <iomanip>
 namespace fs = std::experimental::filesystem;
 
@@ -39,6 +40,7 @@ struct option longopts_t[] = {{"hw", required_argument, NULL, 'r'},
                               {"trigger", required_argument, NULL, 't'},
                               {"debug", no_argument, NULL, 'd'},
                               {"force", no_argument, NULL, 'f'},
+                              {"no-decode", no_argument, NULL, 'x'},
                               {"help", no_argument, NULL, 'h'},
                               {0, 0, 0, 0}};
 
@@ -171,8 +173,15 @@ uint32_t retrieve(unsigned& start_pos, unsigned length, const std::vector<uint64
         unsigned mask_first = (1 << length_first) - 1;
         unsigned mask_second = (1 << n_over) - 1;
 
-        uint32_t value0 = data[data_block_idx_start] & mask_first;
-        uint32_t value1 = (data[data_block_idx_end] >> ((63-3) - (n_over-1))) & mask_second;
+        uint64_t value0 = data[data_block_idx_start] & mask_first;
+        uint64_t value1 = (data[data_block_idx_end] >> ((63-3) - (n_over-1))) & mask_second;
+
+        uint64_t ns_bit = (value1 >> 63) & 0x1;
+        uint64_t ch_id = (value1 >> 61) & 0x3;
+        if(ns_bit == 1) {
+            LOGGER(error)("Unexpected NS=1 seen for CH.ID = {}", ch_id);
+            throw std::runtime_error("Unexpected NS bit seen");
+        }
         value = (value0 << n_over) | value1;
     } else {
         value = (data[data_block_idx_start] >> end_pos_rev) & mask;
@@ -191,6 +200,17 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
     uint8_t ns_bit = retrieve(pos, 1, data);
     uint8_t ch_id = retrieve(pos, 2, data);
     uint16_t tag = retrieve(pos, 8, data);
+    if(ch_id == 2 && tag == 8) {
+        LOGGER(error)("---------------------------------");
+        LOGGER(error)("Decoding chip id 2 tag = {}", tag);
+        unsigned idx = 0;
+        for(auto db : data) {
+            std::bitset<64> dbbits(db);
+            LOGGER(error)("    [{}] {}", idx, dbbits.to_string());
+            idx++;
+        }
+    }
+    bool print_stuff = (tag == 8 && ch_id == 2);
     //LOGGER(error)("Decode: NS = {}, ch_id = {}, tag = {}", ns_bit, ch_id, tag);
     //size_t i = 0;
     //for(auto block : data) {
@@ -207,6 +227,10 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
     while(true) {
 
         uint16_t ccol = retrieve(pos, 6, data);
+        if(print_stuff) {
+            std::bitset<6> ccol_bits(ccol);
+            LOGGER(error)("CCOL = {}", ccol_bits.to_string());
+        }
 
         // if ccol is 0 this is the end of stream marker and nothing beyond it is valid data
         if(ccol == 0) {
@@ -225,95 +249,191 @@ std::vector<Event> decode_stream(Stream& stream, bool drop_tot = false, bool do_
             continue; // go back to the start of the hit loop
         }
 
-        // loop over all hits in the event
         uint8_t qrow = 0;
         uint8_t is_last = 0;
-        do {
+        uint8_t is_neighbor = 0;
+        while(true) {
             is_last = retrieve(pos, 1, data);
-            uint8_t is_neighbor = retrieve(pos, 1, data);
+            is_neighbor = retrieve(pos, 1, data);
             if(is_neighbor == 1) {
                 qrow = qrow + 1;
             } else {
                 qrow = retrieve(pos, 8, data);
             }
 
-
-            //LOGGER(error)("Hitmap pos INITIAL = {}", pos);
             uint32_t hitmap = retrieve(pos, 16, data);
-            //std::bitset<16> hitmap_bits(hitmap);
-            //LOGGER(error)("   hitmap bits = {}", hitmap_bits.to_string());
-            if(do_compressed_hitmap) {
-                uint16_t hitmap_raw = (hitmap & 0xffff);
-                hitmap = (RD53BDecoding::_LUT_BinaryTreeHitMap[hitmap_raw] & 0xFFFF);
-                uint8_t hitmap_rollBack = ((RD53BDecoding::_LUT_BinaryTreeHitMap[hitmap_raw] & 0xFF000000) >> 24);
-                if(hitmap_rollBack > 0) {
-                    if(hitmap_rollBack != 0xff) {
-                        pos = pos - hitmap_rollBack;
-                    }
-                    uint16_t rowMap = retrieve(pos, 14, data);
-                    hitmap |= (RD53BDecoding::_LUT_BinaryTreeRowHMap[rowMap] << 8);
-                    pos -= (RD53BDecoding::_LUT_BinaryTreeRowHMap[rowMap] & 0xFF00) >> 8;
-                } else {
-                    pos -= (RD53BDecoding::_LUT_BinaryTreeHitMap[hitmap_raw] & 0xFF0000) >> 16;
-                }
-                
+            if(print_stuff) {
+                std::bitset<8> qrow_bits(qrow);
+                std::bitset<16> hitmap_bits(hitmap);
+                LOGGER(error)("IS_LAST = {}", is_last);
+                LOGGER(error)("IS_NEIGHBOR = {}", is_neighbor);
+                LOGGER(error)("QROW = {}", qrow_bits.to_string());
+                LOGGER(error)("HITMAP = {}", hitmap_bits.to_string());
             }
-            //LOGGER(error)("Hitmap pos FINAL   = {}", pos);
-
             if(qrow >= 196) {
-                for(unsigned ibus = 0; ibus < 4; ibus++) {
-                    uint8_t hitbus = (hitmap >> (ibus << 2)) & 0xf;
-                    if(hitbus) {
-                        uint16_t ptot_ptoa_buf = 0xffff;
-                        for(unsigned iread = 0; iread < 4; iread++) {
-                            if((hitbus >> iread) & 0x1) {
-                                ptot_ptoa_buf &= ~((~retrieve(pos, 4, data) & 0xf) << (iread<<2));
-                            }
-                        } // iread
-                        uint16_t ptot = ptot_ptoa_buf & 0x7ff;
-                        uint16_t ptoa = ptot_ptoa_buf >> 11;
-                        unsigned step = 0;
-                        uint16_t pix_col = (ccol -1 ) * 8 + PToT_maskStaging[step % 4][ibus] + 1;
-                        uint16_t pix_row = step / 2 + 1;
-                        Hit hit;
-                        hit.col = pix_col;
-                        hit.row = pix_row;
-                        hit.ptot = ptot;
-                        hit.ptoa = ptoa;
-                        n_hits++;
-                        current_event.hits.push_back(hit);
-                    } // if hitbus
-                } // ibus
-            } // qrow >= 196
-            else if(!use_ptot){
+                throw std::runtime_error("Invalid qrow observed");
+            }
 
-                // not considering compressed hitmaps right now
-                auto arr_size = RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] << 2;
-                if(arr_size == 0) {
-                    LOGGER(error)("Received fragment with no ToT! ({}, {}) [chip id = {}, tag = {}]", ccol, qrow, ch_id, tag);
-                    throw std::runtime_error("Decoding error");
+            if(RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] == 0) {
+                LOGGER(error)("Received fragment with no ToT! ({}, {}) [chip id = {}, tag = {}], hitmap = {:x}, pos = {}", ccol, qrow, ch_id, tag, hitmap, pos);
+                throw std::runtime_error("Decoding error");
+            }
+
+            uint64_t tot_field_width = RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] << 2;
+            uint64_t n_tots = RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap];
+            uint64_t tot_field = retrieve(pos, tot_field_width, data);
+            if(print_stuff) {
+                std::bitset<64> tot_bits(tot_field);
+                LOGGER(error)("TOT_FIELD WIDTH = {}", tot_field_width);
+                LOGGER(error)("TOT_FIELD = {}", tot_bits.to_string());
+            }
+            //uint64_t tot = drop_tot ? 0 : retrieve(pos, RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] << 2, data);
+            if(drop_tot) { tot_field_width = 0; }
+            for(unsigned ihit = 0; ihit < n_tots; ihit++) {
+                uint8_t tot_val = (tot_field >> (ihit << 2)) & 0xf;
+                uint16_t pix_col = ((ccol - 1) * 8) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] >> 4) + 1;
+                uint16_t pix_row = ((qrow)*2) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] & 0xF) + 1;
+
+                if(tot_val > 0) {
+                    Hit hit;
+                    hit.col = (pix_col - 1);
+                    hit.row = (pix_row - 1);
+                    hit.tot = tot_val;
+                    n_hits++;
+                    current_event.hits.push_back(hit);
                 }
-                //LOGGER(error)("ToT data start at POS = {}, size = {}", pos, arr_size);
-                uint64_t tot = drop_tot ? 0 : retrieve(pos, arr_size, data);
-                for(unsigned ihit = 0; ihit < arr_size; ihit++) {
-                    uint8_t pix_tot = (tot >> (ihit << 2)) & 0xf;
-                    uint16_t pix_col = ((ccol - 1) * 8) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] >> 4) + 1;
-                    uint16_t pix_row = ((qrow)*2) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] & 0xF) + 1;
+            } // ihit
 
-                    // consider tot == 0 to be a "no hit"
-                    if(pix_tot > 0) {
-                        Hit hit;
-                        hit.col = (pix_col-1);
-                        hit.row = (pix_row-1);
-                        hit.tot = pix_tot;
-                        n_hits++;
-                        current_event.hits.push_back(hit);
-                    } // non-empty tot value
-                } // ihit
-            } 
-        } while(!is_last);
-        //events.push_back(current_event);
+            // that was the last block of hits in this ccol, so break out of this loop
+            if(is_last == 1) {
+                break;
+            }
+        } // end hit loop
     } // event loop
+
+
+//////butts
+//        // loop over all hits in the event
+//        uint8_t qrow = 0;
+//        uint8_t is_last = 0;
+//        do {
+//            is_last = retrieve(pos, 1, data);
+//            uint8_t is_neighbor = retrieve(pos, 1, data);
+//            if(is_neighbor == 1) {
+//                qrow = qrow + 1;
+//            } else {
+//                qrow = retrieve(pos, 8, data);
+//            }
+//
+//
+//            //LOGGER(error)("Hitmap pos INITIAL = {}", pos);
+//            uint32_t hitmap = retrieve(pos, 16, data);
+//            LOGGER(error)("HITS FOR CH ID {} TAG {} CCOL {} QROW {} IS_LAST {} IS_NEIGHBOR {} HITMAP {:x}", ch_id, tag, ccol, qrow, is_last, is_neighbor, hitmap);
+//            //std::bitset<16> hitmap_bits(hitmap);
+//            //if(print_stuff) {
+//            //    LOGGER(error)("   hitmap bits = {}", hitmap_bits.to_string());
+//            //}
+//            if(do_compressed_hitmap) {
+//                uint16_t hitmap_raw = (hitmap & 0xffff);
+//                hitmap = (RD53BDecoding::_LUT_BinaryTreeHitMap[hitmap_raw] & 0xFFFF);
+//                uint8_t hitmap_rollBack = ((RD53BDecoding::_LUT_BinaryTreeHitMap[hitmap_raw] & 0xFF000000) >> 24);
+//                if(hitmap_rollBack > 0) {
+//                    if(hitmap_rollBack != 0xff) {
+//                        pos = pos - hitmap_rollBack;
+//                    }
+//                    uint16_t rowMap = retrieve(pos, 14, data);
+//                    hitmap |= (RD53BDecoding::_LUT_BinaryTreeRowHMap[rowMap] << 8);
+//                    pos -= (RD53BDecoding::_LUT_BinaryTreeRowHMap[rowMap] & 0xFF00) >> 8;
+//                } else {
+//                    pos -= (RD53BDecoding::_LUT_BinaryTreeHitMap[hitmap_raw] & 0xFF0000) >> 16;
+//                }
+//                
+//            }
+//            //LOGGER(error)("Hitmap pos FINAL   = {}", pos);
+//
+//            if(qrow >= 196) {
+//                for(unsigned ibus = 0; ibus < 4; ibus++) {
+//                    uint8_t hitbus = (hitmap >> (ibus << 2)) & 0xf;
+//                    if(hitbus) {
+//                        uint16_t ptot_ptoa_buf = 0xffff;
+//                        for(unsigned iread = 0; iread < 4; iread++) {
+//                            if((hitbus >> iread) & 0x1) {
+//                                ptot_ptoa_buf &= ~((~retrieve(pos, 4, data) & 0xf) << (iread<<2));
+//                            }
+//                        } // iread
+//                        uint16_t ptot = ptot_ptoa_buf & 0x7ff;
+//                        uint16_t ptoa = ptot_ptoa_buf >> 11;
+//                        unsigned step = 0;
+//                        uint16_t pix_col = (ccol -1 ) * 8 + PToT_maskStaging[step % 4][ibus] + 1;
+//                        uint16_t pix_row = step / 2 + 1;
+//                        Hit hit;
+//                        hit.col = pix_col;
+//                        hit.row = pix_row;
+//                        hit.ptot = ptot;
+//                        hit.ptoa = ptoa;
+//                        n_hits++;
+//                        current_event.hits.push_back(hit);
+//                    } // if hitbus
+//                } // ibus
+//            } // qrow >= 196
+//            else if(!use_ptot){
+//
+//                // not considering compressed hitmaps right now
+//                //auto arr_size = RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] << 2;
+//                if(RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] == 0) {
+//                    LOGGER(error)("Received fragment with no ToT! ({}, {}) [chip id = {}, tag = {}]", ccol, qrow, ch_id, tag);
+//                    throw std::runtime_error("Decoding error");
+//                }
+//
+////47                         for (unsigned ihit = 0; ihit < _LUT_PlainHMap_To_ColRow_ArrSize[hitmap]; ++ihit)
+////348                         {
+////349                             const uint8_t pix_tot = (ToT >> (ihit << 2)) & 0xF;
+////350                             // First pixel is 1,1, last pixel is 400,384
+////351                             const uint16_t pix_col = ((ccol - 1) * 8) + (_LUT_PlainHMap_To_ColRow[hitmap][ihit] >> 4) + 1;
+////352                             const uint16_t pix_row = ((qrow)*2) + (_LUT_PlainHMap_To_ColRow[hitmap][ihit] & 0xF) + 1;
+////353
+////354                             // For now fill in events without checking whether the addresses are valid
+////355                             if (events[channel] == 0)
+////356                             {
+////357                                 logger->warn("[{}] No header in data fragment!", channel);
+////358                                 curOut[channel]->newEvent(666, l1id[channel], bcid[channel]);
+////359                                 events[channel]++;
+////360                             }
+////361
+////362                             curOut[channel]->curEvent->addHit({pix_col,pix_row,pix_tot});
+////363                             //logger->info("Hit: row({}) col({}) tot({}) ", pix_row, pix_col, pix_tot);
+////364                             hits[channel]++;
+////365                         }
+////366                     }
+//                //LOGGER(error)("ToT data start at POS = {}, size = {}", pos, arr_size);
+//                uint64_t tot = drop_tot ? 0 : retrieve(pos, RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap] << 2, data);
+//                //std::bitset<64> tot_bits(tot);
+//                //uint64_t data_val = data[static_cast<unsigned>(pos / 64)];
+//                //std::bitset<64> data_bits(data_val);
+//                //if(print_stuff) {
+//                //    LOGGER(error)("             ARR_SIZE = {}", arr_size);
+//                //    LOGGER(error)("        current block = {}", data_bits.to_string());
+//                //    LOGGER(error)("                  tot = {}", tot_bits.to_string());
+//                //}
+//                for(unsigned ihit = 0; ihit < RD53BDecoding::_LUT_PlainHMap_To_ColRow_ArrSize[hitmap]; ++ihit) {
+//                    uint8_t pix_tot = (tot >> (ihit << 2)) & 0xf;
+//                    uint16_t pix_col = ((ccol - 1) * 8) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] >> 4) + 1;
+//                    uint16_t pix_row = ((qrow)*2) + (RD53BDecoding::_LUT_PlainHMap_To_ColRow[hitmap][ihit] & 0xF) + 1;
+//
+//                    // consider tot == 0 to be a "no hit"
+//                    if(pix_tot > 0) {
+//                        Hit hit;
+//                        hit.col = (pix_col-1);
+//                        hit.row = (pix_row-1);
+//                        hit.tot = pix_tot;
+//                        n_hits++;
+//                        current_event.hits.push_back(hit);
+//                    } // non-empty tot value
+//                } // ihit
+//            } 
+//        } while(!is_last);
+//        //events.push_back(current_event);
+//    } // event loop
     if(n_hits == 0) {
         events.clear();
     }
@@ -331,8 +451,9 @@ int main(int argc, char* argv[]) {
     bool use_ptot = false;
 	bool verbose = false;
     bool force_ser = false;
+    bool skip_decoding = false;
     int c;
-    while ((c = getopt_long(argc, argv, "r:p:s:t:hdf", longopts_t, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "r:p:s:t:hdfx", longopts_t, NULL)) != -1) {
         switch (c) {
             case 'r':
                 hw_config_filename = optarg;
@@ -351,6 +472,9 @@ int main(int argc, char* argv[]) {
                 break;
             case 'f':
                 force_ser = true;
+                break;
+            case 'x':
+                skip_decoding = true;
                 break;
             case 'h':
                 print_help();
@@ -406,6 +530,8 @@ int main(int argc, char* argv[]) {
     //    std::string name = it.first;
     //    LOGGER(info)("FOO {}: {}", name, (cfg_global->*it.second).read());
     //}
+    fe_primary->sendClear(fe_primary->getChipId());
+    fe_secondary->sendClear(fe_secondary->getChipId());
 
     // Sync CMD decoder
     hw->setCmdEnable(fe_global->getTxChannel());
@@ -446,12 +572,12 @@ int main(int argc, char* argv[]) {
 
     // configure pixels that we want to inject triggers
     std::vector<std::pair<unsigned, unsigned>> pixel_addresses_primary {
-        {0,3}
-        ,{0,4}
+        {0,0}
+        ,{1,0}
     };
     std::vector<std::pair<unsigned, unsigned>> pixel_addresses_secondary {
-        {0,3}
-        ,{0,4}
+        {7,0}
+        ,{2,1}
     };
     std::array<uint16_t, 4> cores = {0x0, 0x0, 0x0, 0x0};
 
@@ -576,6 +702,7 @@ int main(int argc, char* argv[]) {
         blocks.push_back(data);
     }
 
+
     std::map<unsigned, std::vector<Stream>> stream_map;
     std::map<unsigned, unsigned> stream_in_progress_status;
     std::map<unsigned, std::vector<uint64_t>> stream_in_progress;
@@ -602,10 +729,6 @@ int main(int argc, char* argv[]) {
 
         std::bitset<64> bits(data);
         //if(ch_id == set_chip_id_ls) {
-        if(ch_id == (0x3 & fe_primary->getChipId()) || ch_id == (0x3 & fe_secondary->getChipId())) {
-            LOGGER(info)("Data from CH ID {}: {}", ch_id, bits.to_string());
-            //LOGGER(info)("Data from CH ID {}: {:x}", set_chip_id_ls, bits.to_ulong());//to_string());
-        }
         //LOGGER(warn)("Skipping data with CH.ID = {}", ch_id);
         bool is_primary = (ch_id == 3);
         bool is_secondary = (ch_id == 2);
@@ -614,19 +737,40 @@ int main(int argc, char* argv[]) {
             LOGGER(error)("Data from unexpected chip id = {}", ch_id);
             continue;
         }
+        // ignore empty blocks
+        //uint64_t non_header = (data << 11);
+        //if(non_header == 0 && ns_bit == 1) { 
+        //    LOGGER(warn)("IGNORING DATA BLOCK FOR STREAM SINCE ITS EMPTY: {}", bits.to_string());
+        //    continue; 
+        //}
         if(ns_bit == 1) {
             //LOGGER(warn)("NS bit seen for ch_id = {}", ch_id);
             if(stream_in_progress.at(ch_id).size() > 0) {
                 Stream st;
                 st.chip_id = ch_id;
                 st.blocks = stream_in_progress.at(ch_id);
+                LOGGER(warn)("Pushing back stream for ch id {} that is {} 64-bit blocks long", ch_id, st.blocks.size());
+                for(auto b : st.blocks) {
+                    std::bitset<64> bbits(b);
+                    LOGGER(warn)("    -> {}", bbits.to_string());
+                }
                 stream_map[ch_id].push_back(st);
                 stream_in_progress[ch_id].clear();
                 //LOGGER(warn)("Pushing back data blocks for stream with ch_id = {}", ch_id);
             }
         }
         //LOGGER(error)("PUSHING BACK DATA FOR STREAM_IN_PROGRESS[{}]", ch_id);
+
+        if(ch_id == (0x3 & fe_primary->getChipId()) || ch_id == (0x3 & fe_secondary->getChipId())) {
+            LOGGER(info)("Data from CH ID {}: {}", ch_id, bits.to_string());
+            //LOGGER(info)("Data from CH ID {}: {:x}", set_chip_id_ls, bits.to_ulong());//to_string());
+        }
         stream_in_progress[ch_id].push_back(data);
+    }
+
+    if(skip_decoding) {
+        LOGGER(info)("Skipping data stream decoding...");
+        return 0;
     }
 
     bool do_compressed_hitmap = fe_primary->DataEnRaw.read() == 1;
